@@ -14,7 +14,7 @@ and everyone in the circle sees each other on a map.
 | Mobile   | React Native (Expo + dev client / EAS), react-native-maps, expo-location *(step 4+)* |
 | Backend  | Java 21, Spring Boot 3.5 (Web, Security, Data JPA, Validation, Actuator) |
 | Auth     | Stateless JWT (access + refresh), BCrypt |
-| Realtime | WebSocket / STOMP *(step 3)* |
+| Realtime | WebSocket / STOMP (Spring simple broker) |
 | Database | MySQL 8 + Flyway |
 | Push     | Firebase Cloud Messaging *(step 6)* |
 | Deploy   | Docker + docker-compose |
@@ -23,7 +23,7 @@ and everyone in the circle sees each other on a map.
 
 - [x] **Step 1:** Backend scaffold + JWT auth
 - [x] **Step 2:** Family circles
-- [ ] Step 3: Location ingestion + realtime
+- [x] **Step 3:** Location ingestion + realtime
 - [ ] Step 4: Mobile app: auth, join, live map
 - [ ] Step 5: Background location, battery, pause
 - [ ] Step 6: Saved places, geofencing, push
@@ -36,6 +36,7 @@ and everyone in the circle sees each other on a map.
 .
 ├── docker-compose.yml        # MySQL 8 + API
 ├── .env.example              # copy to .env (secrets live here, never committed)
+├── tools/ws-listen.mjs       # zero-dependency STOMP listener for manual testing (Node 22+)
 └── backend/
     ├── Dockerfile            # multi-stage build -> slim JRE, non-root
     ├── pom.xml
@@ -46,6 +47,7 @@ and everyone in the circle sees each other on a map.
         ├── repository/       # Spring Data JPA
         ├── domain/           # JPA entities
         ├── dto/              # request/response records
+        ├── realtime/         # STOMP auth interceptor, broadcaster, /app message handlers
         ├── security/         # JWT issue/verify, auth filter, 401 handler
         └── exception/        # RFC 9457 problem+json error mapping
 ```
@@ -164,6 +166,55 @@ curl -s $API/api/families/$FAMILY_ID -H "Authorization: Bearer $LEO" | jq
 curl -i -X DELETE $API/api/families/$FAMILY_ID/members/me -H "Authorization: Bearer $LEO"
 ```
 
+## API (step 3): locations + realtime
+
+### REST
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/locations` | Report a point `{"lat","lng","accuracy?","battery?","recordedAt?"}`. `201` if shared, `200` with `"shared":false` if sharing is paused in every circle (the point is **discarded**) |
+
+`GET /api/families/{id}` and `/members` now include each member's `lastLocation`. It is
+`null` for a member who has paused sharing in that circle.
+
+Validation: `lat` must be within ±90, `lng` within ±180, `battery` 0–100, `accuracy` ≥ 0 meters.
+`recordedAt` defaults to the server time and is rejected if it's more than 2 minutes in the
+future or older than the 7-day retention window.
+
+### WebSocket (STOMP)
+
+| | |
+|---|---|
+| Endpoint | `ws://localhost:8080/ws` (plain WebSocket, no SockJS) |
+| Auth | STOMP `CONNECT` header `Authorization: Bearer <accessToken>` |
+| Subscribe | `/topic/family/{familyId}/locations` (members only) |
+| Publish (optional) | `SEND /app/locations` with the same JSON as the REST body |
+| Your errors | subscribe to `/user/queue/errors` |
+
+Every message on the topic looks like this:
+
+```json
+{ "userId": "15360958-…", "lat": 40.4168, "lng": -3.7038, "accuracy": 8.0, "battery": 64,
+  "recordedAt": "2026-11-19T17:17:06.928680Z" }
+```
+
+### Try it: watch a location arrive live
+
+```bash
+# Terminal 1: reuse MOM, LEO, CODE and FAMILY_ID from the step 2 walkthrough (Leo must have joined)
+TOKEN=$MOM node tools/ws-listen.mjs $FAMILY_ID
+
+# Terminal 2: Leo reports a location
+curl -s -X POST http://localhost:8080/api/locations -H "Authorization: Bearer $LEO" \
+  -H 'Content-Type: application/json' -d '{"lat":40.4168,"lng":-3.7038,"accuracy":8,"battery":64}'
+```
+
+Terminal 1 prints the point immediately:
+
+```
+12:17:06 PM  user 15360958  40.4168, -3.7038  ±8m  battery 64%  (recorded 2026-11-19T17:17:06.928680Z)
+```
+
 ## Tests
 
 ```bash
@@ -173,6 +224,8 @@ cd backend
 
 - **Unit:** `JwtServiceTest` (expiry, tampering, wrong key, token-type confusion) and `AuthServiceTest` (hashing, email normalization, duplicate email, generic login errors).
 - **Unit (step 2):** `FamilyServiceTest` (creator becomes admin, code collisions, joining again, outsiders get 404, admin handover, deleting the circle when the last member leaves) and `InviteCodeGeneratorTest`.
+- **Unit (step 3):** `LocationServiceTest` (sharing per circle, discarding points when sharing is paused everywhere, timestamp window, choosing between points with the same timestamp).
+- **Realtime:** `LocationRealtimeIntegrationTest` starts the real server on a random port and connects a real STOMP client: a posted point reaches a subscribed member live, `SEND /app/locations` works, bad payloads go to the sender's error queue, outsiders and bad tokens are rejected, and paused members are neither stored nor shown.
 - **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
 
 ## Design notes (step 1)
@@ -204,3 +257,28 @@ cd backend
   never exposed to other members.
 - **No N+1 queries.** "My circles" loads the memberships and their families with a single
   join, then fetches all member counts in one grouped query.
+
+## Design notes (step 3)
+
+- **Consent is enforced on the server.** A point is shared only with circles where the member
+  has sharing on. Paused everywhere means it is discarded, not stored. A paused member's
+  last known location is hidden too, not just new points.
+- **One authorization rule for REST and WebSocket.** The STOMP interceptor checks `SUBSCRIBE`
+  with the same `FamilyAccessService.requireMember` that the REST endpoints use. Clients may only
+  `SEND` to `/app/**`, never straight to a `/topic`, so nobody can publish a fake location
+  for someone else.
+- **JWT in the STOMP CONNECT frame,** because browser and React Native WebSocket APIs can't set
+  headers on the handshake. Putting the token in the URL would leak it into access logs.
+- **Broadcast after commit** (`@TransactionalEventListener(AFTER_COMMIT)`), so subscribers never
+  see a point that was rolled back.
+- **Points belong to the user, not the circle.** Someone in two circles reports once, and each
+  circle where sharing is on gets it.
+- **Latest location without N+1:** one roster query plus one "latest per user" query, served by
+  the `(user_id, recorded_at)` index.
+- **Late uploads keep their real time.** A phone that was offline can upload points afterwards
+  with their original timestamps, so clients ignore a point older than the one they're showing.
+- **Scaling note.** The in-memory simple broker works for one API instance. To run several,
+  switch to a broker relay (RabbitMQ or ActiveMQ via `enableStompBrokerRelay`) so all
+  instances share topics.
+- **Known limitation.** A member who leaves a circle keeps an existing subscription until they
+  reconnect. *Planned:* close their sessions when they leave.
