@@ -52,6 +52,8 @@ public class LocationService {
 
     @Transactional
     public RecordLocationResponse record(UUID userId, LocationRequest request) {
+        Instant recordedAt = resolveRecordedAt(request.recordedAt()); // validate before anything else
+
         List<UUID> sharingWith = members.findByUserIdOrderByJoinedAtAsc(userId).stream()
                 .filter(FamilyMember::isSharingEnabled)
                 .map(m -> m.getFamily().getId())
@@ -61,7 +63,7 @@ public class LocationService {
         }
 
         Location saved = locations.save(new Location(userId, request.lat(), request.lng(),
-                request.accuracy(), request.battery(), resolveRecordedAt(request.recordedAt())));
+                request.accuracy(), request.battery(), recordedAt));
 
         LocationResponse location = LocationResponse.from(saved);
         events.publishEvent(new LocationRecordedEvent(location, sharingWith));
