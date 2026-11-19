@@ -22,7 +22,7 @@ and everyone in the circle sees each other on a map.
 ## Project status
 
 - [x] **Step 1:** Backend scaffold + JWT auth
-- [ ] Step 2: Family circles
+- [x] **Step 2:** Family circles
 - [ ] Step 3: Location ingestion + realtime
 - [ ] Step 4: Mobile app: auth, join, live map
 - [ ] Step 5: Background location, battery, pause
@@ -124,6 +124,46 @@ Example login response:
 }
 ```
 
+## API (step 2): family circles
+
+All endpoints require `Authorization: Bearer <accessToken>`. Anyone who isn't a member of a
+circle gets **404** for it, the same response as a circle that doesn't exist.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST   | `/api/families` | Create a circle `{"name":"…"}`; you become `ADMIN` (`201`) |
+| POST   | `/api/families/join` | Join with `{"inviteCode":"K7QM-3XPA"}` (case, spaces and dash ignored; joining again is harmless) |
+| GET    | `/api/families` | Circles you belong to, with your role and the member count |
+| GET    | `/api/families/{id}` | A circle with its members |
+| GET    | `/api/families/{id}/members` | Just the members |
+| DELETE | `/api/families/{id}/members/me` | Leave the circle (`204`) |
+
+### curl walkthrough: two users, one circle
+
+```bash
+API=http://localhost:8080
+reg() { curl -s -X POST $API/api/auth/register -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$1\",\"email\":\"$2\",\"password\":\"s3cret-pass\"}" | jq -r .accessToken; }
+
+MOM=$(reg Mom mom@example.com)
+LEO=$(reg Leo leo@example.com)
+
+# Mom creates the circle and gets the invite code
+CIRCLE=$(curl -s -X POST $API/api/families -H "Authorization: Bearer $MOM" \
+  -H 'Content-Type: application/json' -d '{"name":"The Smiths"}')
+FAMILY_ID=$(echo "$CIRCLE" | jq -r .id); CODE=$(echo "$CIRCLE" | jq -r .inviteCode)
+
+# Leo joins with the code
+curl -s -X POST $API/api/families/join -H "Authorization: Bearer $LEO" \
+  -H 'Content-Type: application/json' -d "{\"inviteCode\":\"$CODE\"}"
+
+# Both now see the same roster
+curl -s $API/api/families/$FAMILY_ID -H "Authorization: Bearer $LEO" | jq
+
+# Leo leaves
+curl -i -X DELETE $API/api/families/$FAMILY_ID/members/me -H "Authorization: Bearer $LEO"
+```
+
 ## Tests
 
 ```bash
@@ -132,7 +172,8 @@ cd backend
 ```
 
 - **Unit:** `JwtServiceTest` (expiry, tampering, wrong key, token-type confusion) and `AuthServiceTest` (hashing, email normalization, duplicate email, generic login errors).
-- **Integration:** `AuthControllerIntegrationTest` runs the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
+- **Unit (step 2):** `FamilyServiceTest` (creator becomes admin, code collisions, joining again, outsiders get 404, admin handover, deleting the circle when the last member leaves) and `InviteCodeGeneratorTest`.
+- **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
 
 ## Design notes (step 1)
 
@@ -147,3 +188,19 @@ cd backend
   entity and schema fails at startup instead of silently changing the database.
 - **UUIDs as `BINARY(16)`.** Uses less space and indexes better than `CHAR(36)`.
 - **Fail fast on config.** The app refuses to start if `JWT_SECRET` is missing or shorter than 256 bits.
+
+## Design notes (step 2)
+
+- **Authorization in the service layer.** `FamilyAccessService.requireMember` is the single
+  check every circle-scoped operation calls first, and later steps (locations, places, SOS)
+  reuse it. A controller can't skip it.
+- **404 instead of 403 for outsiders.** A stranger can't tell whether a circle id exists.
+- **Invite codes** look like `K7QM-3XPA`. They use 8 characters from `SecureRandom`, from an
+  alphabet without look-alikes (no `0/O`, `1/I`): about 1.1 trillion combinations, easy to
+  read aloud. *Planned hardening:* rate-limit `/join` and let admins rotate the code.
+- **A circle always has an admin.** If the last admin leaves, the longest-standing member is
+  promoted. If the last member leaves, the circle is deleted.
+- **Data minimization.** Rosters show name, avatar, role and sharing status. Emails are
+  never exposed to other members.
+- **No N+1 queries.** "My circles" loads the memberships and their families with a single
+  join, then fetches all member counts in one grouped query.
