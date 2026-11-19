@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api, ApiError } from '@/api/client';
 import type { User } from '@/api/types';
+import { disablePush } from '@/notifications/push';
 import { session } from './session';
 
 type Status = 'loading' | 'signedOut' | 'signedIn';
@@ -71,7 +72,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('signedIn');
   }, []);
 
-  const signOut = useCallback(() => session.clear(), []);
+  // Unregister this phone's push token first, while we're still authenticated.
+  const signOut = useCallback(async () => {
+    await disablePush();
+    await session.clear();
+  }, []);
 
   const value = useMemo(
     () => ({ status, user, signIn, register, signOut, pendingInvite, setPendingInvite }),

@@ -12,6 +12,9 @@ interface Props {
   onLeave: () => void;
   onSignOut: () => void;
   onClose: () => void;
+  /** Push notifications for arrivals/departures on this phone. */
+  alertsOn: boolean;
+  onToggleAlerts: () => void;
 }
 
 interface ItemProps {
@@ -41,6 +44,7 @@ function Item({ label, onPress, danger, selected }: ItemProps) {
 /** Bottom sheet: switch circle, join or create another, leave, sign out. */
 export function CircleMenu(props: Props) {
   const { visible, circles, selectedId, onSelect, onJoinOrCreate, onLeave, onSignOut, onClose } = props;
+  const { alertsOn, onToggleAlerts } = props;
   const t = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -64,6 +68,10 @@ export function CircleMenu(props: Props) {
         </ScrollView>
         <View style={[styles.divider, { backgroundColor: t.border }]} />
         <Item label="Join or create a circle" onPress={onJoinOrCreate} />
+        <Item
+          label={alertsOn ? 'Arrival notifications: on (tap to turn off)' : 'Turn on arrival notifications'}
+          onPress={onToggleAlerts}
+        />
         {selectedId ? <Item label="Leave this circle" onPress={onLeave} danger /> : null}
         <Item label="Sign out" onPress={onSignOut} />
       </View>

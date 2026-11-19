@@ -36,6 +36,12 @@
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#1a73e8"
+        }
       ]
     ],
     "scheme": "familymap",

@@ -74,6 +74,30 @@ export interface FamilyDetail {
   members: Member[];
 }
 
+export interface Place {
+  id: string;
+  familyId: string;
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM: number;
+  createdBy: string;
+  createdAt: string;
+}
+
+export type CircleEventType = 'ARRIVED' | 'LEFT' | 'PLACE_ADDED' | 'PLACE_REMOVED';
+
+/** Live on /topic/family/{id}/events. */
+export interface CircleEvent {
+  type: CircleEventType;
+  familyId: string;
+  placeId: string;
+  placeName: string;
+  userId: string;
+  userName: string;
+  at: string;
+}
+
 /** RFC 9457 problem+json, as returned by GlobalExceptionHandler. */
 export interface Problem {
   status: number;

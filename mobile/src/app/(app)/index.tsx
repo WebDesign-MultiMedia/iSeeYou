@@ -4,7 +4,7 @@ import { ActivityIndicator, Alert, FlatList, Pressable, Share, StyleSheet, Text,
 import MapView from 'react-native-maps';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
-import type { FamilySummary, LocationPoint, Member } from '@/api/types';
+import type { CircleEvent, FamilySummary, LocationPoint, Member, Place } from '@/api/types';
 import { useAuth } from '@/auth/AuthProvider';
 import { Button } from '@/components/Button';
 import { inviteLink } from '@/config';
@@ -15,7 +15,12 @@ import { MemberMarker } from '@/features/map/MemberMarker';
 import { MemberRow } from '@/features/map/MemberRow';
 import { SharingBar } from '@/features/map/SharingBar';
 import { useNow } from '@/features/map/useNow';
+import { EventBanner } from '@/features/places/EventBanner';
+import { PlaceOverlay } from '@/features/places/PlaceOverlay';
+import { canRemovePlace, changesPlaces, formatRadius } from '@/features/places/places';
+import { usePlaces } from '@/features/places/usePlaces';
 import { useLocationSharing } from '@/location/LocationSharingProvider';
+import { disablePush, enablePush, pushEnabled } from '@/notifications/push';
 import { useLiveCircle } from '@/realtime/useLiveCircle';
 import { font, radius, spacing, useTheme } from '@/theme';
 
@@ -70,7 +75,26 @@ export default function MapHome() {
     }, [loadCircles]),
   );
 
-  const { circle, error: circleError, connection, reload, applyMember } = useLiveCircle(selectedId);
+  // ---- places + live events ----
+  const { places, reload: reloadPlaces } = usePlaces(selectedId);
+  const [banner, setBanner] = useState<CircleEvent | null>(null);
+  const onCircleEvent = useCallback(
+    (event: CircleEvent) => {
+      if (changesPlaces(event)) void reloadPlaces();
+      setBanner(event);
+    },
+    [reloadPlaces],
+  );
+  const dismissBanner = useCallback(() => setBanner(null), []);
+
+  const [alertsOn, setAlertsOn] = useState(false);
+  useEffect(() => {
+    void pushEnabled().then(setAlertsOn);
+  }, []);
+
+  const { circle, error: circleError, connection, reload, applyMember } = useLiveCircle(selectedId, onCircleEvent);
+  const currentName = circle?.name ?? circles?.find((c) => c.id === selectedId)?.name ?? 'Your circle';
+
   const members = useMemo(() => {
     const list = circle?.members ?? [];
     // You first, then everyone else in the order they joined.
@@ -106,7 +130,60 @@ export default function MapHome() {
     );
   }, []);
 
+  const focusPlace = useCallback(
+    (placeId: string) => {
+      const p = places.find((x) => x.id === placeId);
+      if (!p) return;
+      const delta = Math.max(0.005, (p.radiusM / 111_000) * 4);
+      mapRef.current?.animateToRegion(
+        { latitude: p.lat, longitude: p.lng, latitudeDelta: delta, longitudeDelta: delta },
+        500,
+      );
+    },
+    [places],
+  );
+
   // ---- actions ----
+  const addPlaceAt = (lat: number, lng: number) => {
+    if (!selectedId) return;
+    router.push({ pathname: '/place-new', params: { familyId: selectedId, lat: String(lat), lng: String(lng), circleName: currentName } });
+  };
+
+  const openPlace = (place: Place) => {
+    const removable = canRemovePlace(place, user?.id, circle?.myRole);
+    Alert.alert(place.name, `Alerts when someone arrives or leaves (${formatRadius(place.radiusM)} around it).`, [
+      { text: 'OK', style: 'cancel' },
+      ...(removable
+        ? [
+            {
+              text: 'Remove place',
+              style: 'destructive' as const,
+              onPress: async () => {
+                try {
+                  await api.deletePlace(place.familyId, place.id);
+                  await reloadPlaces();
+                } catch (e) {
+                  Alert.alert('Couldn’t remove it', describeError(e).message ?? undefined);
+                }
+              },
+            },
+          ]
+        : []),
+    ]);
+  };
+
+  const toggleAlerts = async () => {
+    setMenuOpen(false);
+    if (alertsOn) {
+      await disablePush();
+      setAlertsOn(false);
+      return;
+    }
+    const result = await enablePush();
+    if (result.ok) setAlertsOn(true);
+    else Alert.alert('Notifications', result.message);
+  };
+
   const shareInvite = () => {
     if (!circle) return;
     void Share.share({
@@ -173,7 +250,6 @@ export default function MapHome() {
     );
   }
 
-  const currentName = circle?.name ?? circles.find((c) => c.id === selectedId)?.name ?? 'Your circle';
 
   return (
     <View style={styles.flex}>
@@ -187,8 +263,12 @@ export default function MapHome() {
         showsMyLocationButton={sharing.permission === 'granted'}
         showsCompass={false}
         toolbarEnabled={false}
-        accessibilityLabel="Family map"
+        accessibilityLabel="Family map. Long-press to save a place."
+        onLongPress={(e) => addPlaceAt(e.nativeEvent.coordinate.latitude, e.nativeEvent.coordinate.longitude)}
       >
+        {places.map((p) => (
+          <PlaceOverlay key={p.id} place={p} onPress={openPlace} />
+        ))}
         {located.map((m) => (
           <MemberMarker key={m.userId} member={m} now={now} onPress={focusMember} />
         ))}
@@ -209,6 +289,17 @@ export default function MapHome() {
         <ConnectionBadge connection={connection} />
       </View>
 
+      <EventBanner
+        event={banner}
+        myUserId={user?.id}
+        top={insets.top + spacing.sm + 48}
+        onPress={(e) => {
+          dismissBanner();
+          focusPlace(e.placeId);
+        }}
+        onDismiss={dismissBanner}
+      />
+
       {/* Roster panel */}
       <View
         onLayout={(e) => setPanelHeight(e.nativeEvent.layout.height)}
@@ -222,6 +313,7 @@ export default function MapHome() {
             <Text style={[font.caption, { color: t.textMuted }]}>
               {members.length} {members.length === 1 ? 'member' : 'members'}
               {circle ? `  ·  Code ${circle.inviteCode}` : ''}
+              {`  ·  ${places.length === 0 ? 'Long-press the map to save a place' : `${places.length} ${places.length === 1 ? 'place' : 'places'}`}`}
             </Text>
           </View>
           <Button title="Invite" variant="secondary" onPress={shareInvite} disabled={!circle} />
@@ -274,6 +366,8 @@ export default function MapHome() {
           void signOut();
         }}
         onClose={() => setMenuOpen(false)}
+        alertsOn={alertsOn}
+        onToggleAlerts={() => void toggleAlerts()}
       />
     </View>
   );

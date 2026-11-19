@@ -7,6 +7,7 @@ import type {
   FamilySummary,
   LocationReport,
   Member,
+  Place,
   Problem,
   RecordLocationResponse,
   User,
@@ -153,4 +154,18 @@ export const api = {
 
   reportLocation: (point: LocationReport) =>
     request<RecordLocationResponse>('/api/locations', { method: 'POST', body: point }),
+
+  places: (familyId: string) => request<Place[]>(`/api/families/${familyId}/places`),
+
+  createPlace: (familyId: string, place: { name: string; lat: number; lng: number; radiusM: number }) =>
+    request<Place>(`/api/families/${familyId}/places`, { method: 'POST', body: place }),
+
+  deletePlace: (familyId: string, placeId: string) =>
+    request<void>(`/api/families/${familyId}/places/${placeId}`, { method: 'DELETE' }),
+
+  registerPushToken: (token: string, platform: 'ios' | 'android') =>
+    request<void>('/api/me/push-token', { method: 'PUT', body: { token, platform } }),
+
+  unregisterPushToken: (token: string) =>
+    request<void>('/api/me/push-token', { method: 'DELETE', body: { token } }),
 };

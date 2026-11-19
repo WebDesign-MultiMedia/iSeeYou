@@ -6,7 +6,10 @@ import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { LocationSharingProvider } from '@/location/LocationSharingProvider';
 // Defines the background location task at startup, before any screen (required by TaskManager).
 import '@/location/task';
+import { configureForegroundHandling } from '@/notifications/push';
 import { useTheme } from '@/theme';
+
+configureForegroundHandling();
 
 // Keep the splash screen up until we know whether the user is signed in, so there's no
 // flash of the sign-in screen on launch.
