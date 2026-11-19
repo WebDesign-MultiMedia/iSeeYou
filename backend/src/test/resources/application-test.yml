@@ -12,3 +12,5 @@ familymap:
     secret: dGVzdC1vbmx5LXNlY3JldC1mb3ItZmFtaWx5bWFwLWp3dC1zaWduaW5nLWtleS0xMjM0NTY=
   push:
     enabled: false   # tests that need push turn it on and mock ExpoPushClient
+  retention:
+    cron: "-"        # tests call RetentionJob.purge() directly

@@ -9,6 +9,8 @@ import com.familymap.dto.CircleEvent;
 import com.familymap.repository.FamilyMemberRepository;
 import com.familymap.repository.FamilyRepository;
 import com.familymap.repository.PushTokenRepository;
+import com.familymap.dto.SosAlertResponse;
+import com.familymap.service.SosChangedEvent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -16,6 +18,7 @@ import org.mockito.ArgumentCaptor;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -99,5 +102,46 @@ class PushNotifierTest {
         var left = new CircleEvent(CircleEvent.Type.LEFT, family.getId(), UUID.randomUUID(), "School",
                 leo.getId(), "Leo", Instant.now());
         assertThat(PushNotifier.title(left)).isEqualTo("Leo left School");
+    }
+
+    private SosChangedEvent sos(SosChangedEvent.Kind kind, Double lat) {
+        Instant now = Instant.now();
+        var alert = new SosAlertResponse(UUID.randomUUID(), leo.getId(), "Leo", lat, lat == null ? null : 2.0, null, 20,
+                kind != SosChangedEvent.Kind.RESOLVED, now, now, null, kind == SosChangedEvent.Kind.RESOLVED ? mom.getId() : null,
+                kind == SosChangedEvent.Kind.RESOLVED ? "Mom" : null);
+        return new SosChangedEvent(kind, alert, Set.of(family.getId()));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void sosIsLoudAndUrgent() {
+        when(client.send(any())).thenReturn(List.of(new ExpoPushClient.Ticket("ok", null)));
+
+        notifier.onSos(sos(SosChangedEvent.Kind.RAISED, null));
+
+        ArgumentCaptor<List<PushMessage>> sent = ArgumentCaptor.forClass(List.class);
+        verify(client).send(sent.capture());
+        PushMessage m = sent.getValue().getFirst();
+        assertThat(m.to()).isEqualTo(momPhone.getToken());
+        assertThat(m.title()).isEqualTo("🆘 Leo needs help");
+        assertThat(m.body()).contains("location isn't available");
+        assertThat(m.priority()).isEqualTo("high");
+        assertThat(m.channelId()).isEqualTo(PushNotifier.SOS_CHANNEL);
+    }
+
+    @Test
+    void sosPositionUpdatesAreNotPushedAgain() {
+        notifier.onSos(sos(SosChangedEvent.Kind.UPDATED, 1.0));
+        verify(client, never()).send(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void resolvedSosSaysWhoHandledIt() {
+        when(client.send(any())).thenReturn(List.of(new ExpoPushClient.Ticket("ok", null)));
+        notifier.onSos(sos(SosChangedEvent.Kind.RESOLVED, 1.0));
+        ArgumentCaptor<List<PushMessage>> sent = ArgumentCaptor.forClass(List.class);
+        verify(client).send(sent.capture());
+        assertThat(sent.getValue().getFirst().body()).isEqualTo("Marked as handled by Mom.");
     }
 }
