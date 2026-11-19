@@ -1,5 +1,8 @@
 # FamilyMap
 
+[![CI](https://github.com/WebDesign-MultiMedia/iSeeYou/actions/workflows/ci.yml/badge.svg)](https://github.com/WebDesign-MultiMedia/iSeeYou/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A **consent-based** family location-sharing app, a lightweight Life360. A family admin creates
 a circle, members join with an invite code, and everyone in the circle sees each other live on
 a map, gets "Leo arrived at School" alerts, and can send an SOS.
@@ -269,3 +272,7 @@ Step by step: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 - **Refresh tokens can't be revoked** before they expire. Next: server-side rotation with reuse detection.
 - **Brute-forcing invite codes.** `/families/join` isn't rate-limited yet, and admins can't rotate codes.
 - **Leaving a circle** doesn't close existing WebSocket subscriptions until the next reconnect.
+
+## License
+
+[MIT](LICENSE)
