@@ -12,6 +12,7 @@ import com.familymap.exception.ResourceNotFoundException;
 import com.familymap.repository.FamilyMemberRepository;
 import com.familymap.repository.FamilyRepository;
 import com.familymap.repository.UserRepository;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,15 +39,18 @@ public class FamilyService {
     private final FamilyAccessService access;
     private final InviteCodeGenerator codes;
     private final LocationService locations;
+    private final ApplicationEventPublisher events;
 
     public FamilyService(FamilyRepository families, FamilyMemberRepository members, UserRepository users,
-                         FamilyAccessService access, InviteCodeGenerator codes, LocationService locations) {
+                         FamilyAccessService access, InviteCodeGenerator codes, LocationService locations,
+                         ApplicationEventPublisher events) {
         this.families = families;
         this.members = members;
         this.users = users;
         this.access = access;
         this.codes = codes;
         this.locations = locations;
+        this.events = events;
     }
 
     /** Creates a circle; the caller becomes its first ADMIN. */
@@ -107,6 +111,27 @@ public class FamilyService {
     public List<MemberResponse> listMembers(UUID familyId, UUID userId) {
         access.requireMember(familyId, userId);
         return roster(familyId);
+    }
+
+    /**
+     * Pauses or resumes the caller's sharing in one circle and tells the rest of the circle.
+     * Idempotent: setting the current value again changes nothing and broadcasts nothing.
+     *
+     * <p>Resuming shows the member's latest stored point again (if any); fresh points follow
+     * as soon as their phone reports one.
+     */
+    @Transactional
+    public MemberResponse setSharing(UUID familyId, UUID userId, boolean enabled) {
+        FamilyMember me = access.requireMember(familyId, userId);
+        boolean changed = me.isSharingEnabled() != enabled;
+        me.setSharingEnabled(enabled);
+
+        LocationResponse latest = enabled ? locations.latestFor(List.of(userId)).get(userId) : null;
+        MemberResponse member = MemberResponse.from(me, latest);
+        if (changed) {
+            events.publishEvent(new MemberSharingChangedEvent(familyId, member));
+        }
+        return member;
     }
 
     /**
