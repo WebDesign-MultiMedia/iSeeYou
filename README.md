@@ -11,7 +11,7 @@ and everyone in the circle sees each other on a map.
 
 | Layer    | Tech |
 |----------|------|
-| Mobile   | React Native (Expo + dev client / EAS), react-native-maps, expo-location *(step 4+)* |
+| Mobile   | React Native 0.88 / Expo SDK 58, Expo Router, react-native-maps, @stomp/stompjs, expo-secure-store |
 | Backend  | Java 21, Spring Boot 3.5 (Web, Security, Data JPA, Validation, Actuator) |
 | Auth     | Stateless JWT (access + refresh), BCrypt |
 | Realtime | WebSocket / STOMP (Spring simple broker) |
@@ -24,7 +24,7 @@ and everyone in the circle sees each other on a map.
 - [x] **Step 1:** Backend scaffold + JWT auth
 - [x] **Step 2:** Family circles
 - [x] **Step 3:** Location ingestion + realtime
-- [ ] Step 4: Mobile app: auth, join, live map
+- [x] **Step 4:** Mobile app: auth, join, live map
 - [ ] Step 5: Background location, battery, pause
 - [ ] Step 6: Saved places, geofencing, push
 - [ ] Step 7: SOS + history cleanup
@@ -36,7 +36,17 @@ and everyone in the circle sees each other on a map.
 .
 ├── docker-compose.yml        # MySQL 8 + API
 ├── .env.example              # copy to .env (secrets live here, never committed)
-├── tools/ws-listen.mjs       # zero-dependency STOMP listener for manual testing (Node 22+)
+├── tools/
+│   ├── ws-listen.mjs         # zero-dependency STOMP listener for manual testing (Node 22+)
+│   └── simulate-walk.mjs     # demo: a fake family member walking a loop
+├── mobile/                   # Expo app (see "Mobile app" below)
+│   └── src/
+│       ├── app/              # Expo Router screens: (auth)/, (app)/, invite/[code]
+│       ├── api/              # typed API client + token refresh
+│       ├── auth/             # secure session storage, AuthProvider
+│       ├── realtime/         # useLiveCircle: REST + STOMP live roster
+│       ├── features/map/     # markers, roster, pure helpers (unit tested)
+│       └── components/       # Button, TextField, Avatar, FormScreen
 └── backend/
     ├── Dockerfile            # multi-stage build -> slim JRE, non-root
     ├── pom.xml
@@ -215,6 +225,52 @@ Terminal 1 prints the point immediately:
 12:17:06 PM  user 15360958  40.4168, -3.7038  ±8m  battery 64%  (recorded 2026-11-19T17:17:06.928680Z)
 ```
 
+## Mobile app (step 4)
+
+Map-first: your family on a full-screen map, with a panel listing each member's last-seen
+time, battery and sharing status. Markers move as soon as a new point arrives over the
+WebSocket.
+
+### Run it on your phone (Expo Go)
+
+You need the **Expo Go** app on your phone, with the phone on the **same Wi-Fi** as this computer.
+
+```bash
+docker compose up -d                 # the API must be running
+cd mobile
+npm install
+npx expo start                       # scan the QR code with your phone's camera (iOS) or Expo Go (Android)
+```
+
+There's nothing to configure. In development the app calls the API on the machine running
+`expo start` (port 8080). To use another server, set `EXPO_PUBLIC_API_URL` in `mobile/.env`
+(see `mobile/.env.example`).
+
+> **macOS firewall:** if the app says it can't reach FamilyMap, allow incoming connections
+> for Docker in *System Settings → Network → Firewall → Options*, then check from another
+> device: `curl http://<your-mac-ip>:8080/actuator/health`.
+
+### Watch markers move
+
+1. In the app, register and create a circle. The panel shows its invite code.
+2. On your computer, start a fake family member who joins and walks a loop:
+   ```bash
+   node tools/simulate-walk.mjs --code <INVITE-CODE> --lat <your-lat> --lng <your-lng>
+   ```
+3. Their marker appears and moves every 2 seconds, and the battery slowly drains.
+
+Invite links use `familymap://invite/<code>`. The **Invite** button shares a link and the code.
+If the person isn't signed in yet, the app remembers the code until they sign in.
+
+### Checks
+
+```bash
+cd mobile
+npm run typecheck    # tsc --noEmit
+npm test             # jest-expo unit tests
+npx expo-doctor      # dependency / config health
+```
+
 ## Tests
 
 ```bash
@@ -282,3 +338,23 @@ cd backend
   instances share topics.
 - **Known limitation.** A member who leaves a circle keeps an existing subscription until they
   reconnect. *Planned:* close their sessions when they leave.
+
+## Design notes (step 4)
+
+- **Tokens in the keychain/keystore** (`expo-secure-store`), never in AsyncStorage. The access
+  token is refreshed shortly before it expires. If a burst of requests gets 401, they share
+  one refresh call, and a rejected refresh signs the user out.
+- **The auth gate uses `Stack.Protected`.** Screens for signed-in users can't be reached while
+  signed out, even through deep links. The splash screen stays up until the session is
+  restored, so the sign-in screen never flashes.
+- **Realtime that survives mobile networks.** `useLiveCircle` loads over REST, then subscribes
+  over STOMP. It reloads after every reconnect so no point is missed, ignores out-of-order
+  points, sends 10 s heartbeats, and disconnects while the app is in the background. A fresh
+  token is fetched before each reconnect.
+- **Honest data.** A *Live / Reconnecting* badge, "last seen" times, and an accuracy halo for
+  imprecise fixes keep people from trusting a position more than they should.
+- **Accessibility.** Labeled inputs, errors announced to screen readers, 48 dp touch targets,
+  markers and rows labeled with name and status, light and dark themes, and colors with
+  ≥ 4.5:1 contrast.
+- **Expo Go first.** Everything in this step runs in Expo Go. Background location (step 5)
+  needs a development build, which comes then.

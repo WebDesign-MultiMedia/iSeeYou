@@ -46,7 +46,7 @@ ws.addEventListener('message', (event) => {
     } else if (f.command === 'MESSAGE') {
       const p = JSON.parse(f.body);
       console.log(`${new Date().toLocaleTimeString()}  user ${p.userId.slice(0, 8)}  ` +
-        `${p.lat}, ${p.lng}  ±${p.accuracy ?? '?'}m  battery ${p.battery ?? '?'}%  (recorded ${p.recordedAt})`);
+        `${p.lat}, ${p.lng}  ±${p.accuracy != null ? Math.round(p.accuracy) : '?'}m  battery ${p.battery ?? '?'}%  (recorded ${p.recordedAt})`);
     } else if (f.command === 'ERROR') {
       console.error(`server rejected: ${f.headers.message ?? f.body}`);
     }
