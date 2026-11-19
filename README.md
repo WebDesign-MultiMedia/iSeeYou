@@ -26,7 +26,7 @@ and everyone in the circle sees each other on a map.
 - [x] **Step 3:** Location ingestion + realtime
 - [x] **Step 4:** Mobile app: auth, join, live map
 - [x] **Step 5:** Background location, battery, pause
-- [ ] Step 6: Saved places, geofencing, push
+- [x] **Step 6:** Saved places, geofencing, push
 - [ ] Step 7: SOS + history cleanup
 - [ ] Step 8: Portfolio polish
 
@@ -200,6 +200,7 @@ future or older than the 7-day retention window.
 | Auth | STOMP `CONNECT` header `Authorization: Bearer <accessToken>` |
 | Subscribe | `/topic/family/{familyId}/locations` (members only) |
 | Subscribe (step 5) | `/topic/family/{familyId}/members`: a member paused or resumed sharing (their full member JSON) |
+| Subscribe (step 6) | `/topic/family/{familyId}/events`: `ARRIVED`, `LEFT`, `PLACE_ADDED`, `PLACE_REMOVED` |
 | Publish (optional) | `SEND /app/locations` with the same JSON as the REST body |
 | Your errors | subscribe to `/user/queue/errors` |
 
@@ -226,6 +227,26 @@ Terminal 1 prints the point immediately:
 ```
 12:17:06 PM  user 15360958  40.4168, -3.7038  ±8m  battery 64%  (recorded 2026-11-19T17:17:06.928680Z)
 ```
+
+## API (step 6): saved places and push
+
+| Method | Path | |
+|---|---|---|
+| GET | `/api/families/{id}/places` | The circle's saved places |
+| POST | `/api/families/{id}/places` | `{"name","lat","lng","radiusM"}` (50–2000 m, at most 20 per circle). Any member |
+| DELETE | `/api/families/{id}/places/{placeId}` | Whoever added it, or an admin; otherwise `403` |
+| PUT | `/api/me/push-token` | `{"token":"ExponentPushToken[…]","platform":"ios"\|"android"}`. Registers this phone for arrival alerts |
+| DELETE | `/api/me/push-token` | `{"token":"…"}`. The app calls this on sign-out |
+
+An event on `/topic/family/{id}/events`:
+
+```json
+{ "type": "ARRIVED", "familyId": "…", "placeId": "…", "placeName": "Home",
+  "userId": "…", "userName": "Leo", "at": "2026-11-19T18:02:11Z" }
+```
+
+Arrivals and departures are also pushed through Expo's push service to every *other* member
+who turned notifications on. Set `PUSH_ENABLED=false` to keep them in-app only.
 
 ## Mobile app (step 4)
 
@@ -279,6 +300,20 @@ shares while it's open. In an installed build (`npx eas-cli@latest build --profi
 the background option appears. Android then shows a permanent "Sharing your location"
 notification, and iOS shows the blue location pill, so tracking is never invisible.
 
+### Saved places and arrival alerts (step 6)
+
+1. **Long-press the map** where you want a place, then name it and pick a size.
+2. Everyone in the circle sees it as a dashed circle. Tap its name tag to remove it (if you
+   added it, or you're an admin).
+3. When someone walks in or out, everyone else sees a banner, "Leo arrived at Home". Tap it
+   to jump to the place. To try it with the simulator, save a place on Leo's loop:
+   `node tools/simulate-walk.mjs --code <CODE> --lat <lat> --lng <lng>` walks a 300 m circle
+   around that point.
+4. **Push notifications** (circle menu → *Turn on arrival notifications*) need an EAS
+   project id (`npx eas-cli@latest init`) and, on Android, an installed build. Expo Go on
+   Android can't receive push. Without them the app says so, and banners still work while
+   it's open.
+
 ### Checks
 
 ```bash
@@ -302,6 +337,7 @@ cd backend
 - **Realtime:** `LocationRealtimeIntegrationTest` starts the real server on a random port and connects a real STOMP client: a posted point reaches a subscribed member live, `SEND /app/locations` works, bad payloads go to the sender's error queue, outsiders and bad tokens are rejected, and paused members are neither stored nor shown.
 - **Step 5:** `FamilyServiceTest` covers pause, resume, setting the same value again (no broadcast) and outsiders. `LocationRealtimeIntegrationTest` checks that pause and resume reach the circle live over STOMP, and that the endpoint rejects outsiders (404), missing tokens (401) and missing `enabled` (400).
 - **Mobile (step 5):** `policy.test.ts` (power modes, throttling, distance), `outbox.test.ts` (offline queue) and roster-update tests in `members.test.ts`.
+- **Step 6:** `GeofenceTest` (hysteresis, accuracy gate, distance), `GeofenceServiceTest` (silent first sighting, arrive, leave, no rewinding on late uploads), `PlaceServiceTest` (permissions, cap), `PushNotifierTest` (everyone but the mover, dead tokens dropped, failures swallowed) and `PlacesIntegrationTest` (real server: Leo walks in and out of Home, Mom gets live events and a push via a mocked Expo client, and nothing leaks out of a pause).
 - **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
 
 ## Design notes (step 1)
@@ -400,3 +436,22 @@ cd backend
 - **One code path.** The foreground watcher and the background task both go through the
   same `reporter`, so throttling, battery handling and the offline queue behave the same in
   both modes.
+
+## Design notes (step 6)
+
+- **Geofencing on the server, not the phone.** Every stored point is checked against the
+  places of the circles it was shared with. It costs no extra battery or permission, behaves
+  the same on iOS, Android and Expo Go, and can only use locations the member agreed to share
+  with that circle.
+- **No flapping.** You're inside within the radius, but only outside again past the radius
+  plus max(25 m, 20%). Fixes less precise than the place itself decide nothing. Late offline
+  uploads never rewind a newer state.
+- **No surprise announcements.** The first time someone is seen near a place sets a baseline
+  silently, so turning on sharing at home doesn't announce "arrived at Home". Pausing or
+  leaving a circle forgets presence, so resuming doesn't reveal where you went while paused.
+- **Push can't break location uploads.** Notifications go out after commit and off the request
+  thread, are sent in batches of 100, failures are only logged, and tokens Expo reports as
+  `DeviceNotRegistered` are deleted.
+- **Opt-in alerts, cleaned up on sign-out.** The push token is registered only when the user
+  asks, and is unregistered before the session is cleared, so a shared phone doesn't keep
+  getting someone else's alerts.
