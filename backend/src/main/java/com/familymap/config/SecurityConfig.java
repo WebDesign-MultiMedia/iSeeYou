@@ -50,6 +50,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(HttpMethod.POST, PUBLIC_AUTH_ENDPOINTS).permitAll()
                         .requestMatchers("/actuator/health/**", "/error").permitAll()
+                        // WebSocket handshake: auth happens on the STOMP CONNECT frame instead
+                        // (see StompAuthChannelInterceptor), because WS clients can't send headers.
+                        .requestMatchers("/ws", "/ws/**").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
                 .build();
