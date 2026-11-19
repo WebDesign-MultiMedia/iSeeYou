@@ -46,7 +46,8 @@ class FamilyServiceTest {
         when(members.save(any(FamilyMember.class))).thenAnswer(inv -> inv.getArgument(0));
         when(users.findById(ana.getId())).thenReturn(Optional.of(ana));
         when(users.findById(ben.getId())).thenReturn(Optional.of(ben));
-        service = new FamilyService(families, members, users, new FamilyAccessService(members), codes);
+        service = new FamilyService(families, members, users, new FamilyAccessService(members), codes,
+                mock(LocationService.class));
     }
 
     @Test

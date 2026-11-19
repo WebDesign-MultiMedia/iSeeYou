@@ -6,6 +6,7 @@ import com.familymap.domain.FamilyRole;
 import com.familymap.domain.User;
 import com.familymap.dto.FamilyDetailResponse;
 import com.familymap.dto.FamilyResponse;
+import com.familymap.dto.LocationResponse;
 import com.familymap.dto.MemberResponse;
 import com.familymap.exception.ResourceNotFoundException;
 import com.familymap.repository.FamilyMemberRepository;
@@ -36,14 +37,16 @@ public class FamilyService {
     private final UserRepository users;
     private final FamilyAccessService access;
     private final InviteCodeGenerator codes;
+    private final LocationService locations;
 
     public FamilyService(FamilyRepository families, FamilyMemberRepository members, UserRepository users,
-                         FamilyAccessService access, InviteCodeGenerator codes) {
+                         FamilyAccessService access, InviteCodeGenerator codes, LocationService locations) {
         this.families = families;
         this.members = members;
         this.users = users;
         this.access = access;
         this.codes = codes;
+        this.locations = locations;
     }
 
     /** Creates a circle; the caller becomes its first ADMIN. */
@@ -92,7 +95,7 @@ public class FamilyService {
                 .toList();
     }
 
-    /** A circle with its roster. Members only. */
+    /** A circle with its roster and each member's latest location. Members only. */
     @Transactional(readOnly = true)
     public FamilyDetailResponse get(UUID familyId, UUID userId) {
         FamilyMember me = access.requireMember(familyId, userId);
@@ -130,9 +133,13 @@ public class FamilyService {
         members.delete(me);
     }
 
+    /** Members plus their latest points, in two queries total (roster + latest-per-user). */
     private List<MemberResponse> roster(UUID familyId) {
-        return members.findByFamilyIdOrderByJoinedAtAsc(familyId).stream()
-                .map(MemberResponse::from)
+        List<FamilyMember> roster = members.findByFamilyIdOrderByJoinedAtAsc(familyId);
+        Map<UUID, LocationResponse> latest = locations.latestFor(
+                roster.stream().filter(FamilyMember::isSharingEnabled).map(m -> m.getUser().getId()).toList());
+        return roster.stream()
+                .map(m -> MemberResponse.from(m, latest.get(m.getUser().getId())))
                 .toList();
     }
 
