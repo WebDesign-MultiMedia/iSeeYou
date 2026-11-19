@@ -14,6 +14,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 /**
@@ -65,7 +66,7 @@ public class FamilyMember {
     @PrePersist
     void onCreate() {
         if (joinedAt == null) {
-            joinedAt = Instant.now();
+            joinedAt = Instant.now().truncatedTo(ChronoUnit.MICROS); // match DATETIME(6)
         }
     }
 
