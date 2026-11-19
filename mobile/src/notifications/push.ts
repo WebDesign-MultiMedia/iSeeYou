@@ -17,8 +17,9 @@ import { api } from '@/api/client';
  */
 
 const TOKEN_KEY = 'familymap.pushToken.v1';
-/** Must match PushNotifier.ANDROID_CHANNEL on the server. */
+/** Must match PushNotifier.ANDROID_CHANNEL / SOS_CHANNEL on the server. */
 const ANDROID_CHANNEL = 'arrivals';
+const SOS_CHANNEL = 'sos';
 
 export type PushResult =
   | { ok: true }
@@ -69,6 +70,14 @@ export async function enablePush(): Promise<PushResult> {
       name: 'Arrivals and departures',
       description: 'When someone in your circle arrives at or leaves a saved place',
       importance: AndroidImportance.HIGH,
+    });
+    // Separate so people can quiet arrivals but keep SOS loud.
+    await Notifications.setNotificationChannelAsync(SOS_CHANNEL, {
+      name: 'SOS',
+      description: 'When someone in your circle asks for help',
+      importance: AndroidImportance.MAX,
+      vibrationPattern: [0, 500, 250, 500, 250, 500],
+      bypassDnd: true,
     });
   }
 

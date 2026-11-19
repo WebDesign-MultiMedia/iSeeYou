@@ -1,10 +1,10 @@
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, Share, StyleSheet, Text, Vibration, View } from 'react-native';
 import MapView from 'react-native-maps';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { api } from '@/api/client';
-import type { CircleEvent, FamilySummary, LocationPoint, Member, Place } from '@/api/types';
+import type { CircleEvent, FamilySummary, LocationPoint, Member, Place, SosAlert } from '@/api/types';
 import { useAuth } from '@/auth/AuthProvider';
 import { Button } from '@/components/Button';
 import { inviteLink } from '@/config';
@@ -19,6 +19,12 @@ import { EventBanner } from '@/features/places/EventBanner';
 import { PlaceOverlay } from '@/features/places/PlaceOverlay';
 import { canRemovePlace, changesPlaces, formatRadius } from '@/features/places/places';
 import { usePlaces } from '@/features/places/usePlaces';
+import { sendSos } from '@/features/sos/sendSos';
+import { hasLocation } from '@/features/sos/sos';
+import { SosBanner } from '@/features/sos/SosBanner';
+import { SosButton } from '@/features/sos/SosButton';
+import { SosMarker } from '@/features/sos/SosMarker';
+import { useSos } from '@/features/sos/useSos';
 import { useLocationSharing } from '@/location/LocationSharingProvider';
 import { disablePush, enablePush, pushEnabled } from '@/notifications/push';
 import { useLiveCircle } from '@/realtime/useLiveCircle';
@@ -92,7 +98,32 @@ export default function MapHome() {
     void pushEnabled().then(setAlertsOn);
   }, []);
 
-  const { circle, error: circleError, connection, reload, applyMember } = useLiveCircle(selectedId, onCircleEvent);
+  // ---- SOS ----
+  const { alerts: sosAlerts, apply: applySosAlert, reload: reloadSos } = useSos(selectedId);
+  const [sosHeight, setSosHeight] = useState(0);
+  const onSos = useCallback(
+    (alert: SosAlert) => {
+      // A brand-new SOS from someone else: buzz, even though the banner is already on screen.
+      if (alert.active && alert.userId !== user?.id && alert.createdAt === alert.updatedAt) {
+        Vibration.vibrate([0, 400, 200, 400]);
+      }
+      applySosAlert(alert);
+    },
+    [applySosAlert, user?.id],
+  );
+
+  const liveHandlers = useMemo(
+    () => ({
+      onEvent: onCircleEvent,
+      onSos,
+      onReconnect: () => {
+        void reloadSos();
+        void reloadPlaces();
+      },
+    }),
+    [onCircleEvent, onSos, reloadSos, reloadPlaces],
+  );
+  const { circle, error: circleError, connection, reload, applyMember } = useLiveCircle(selectedId, liveHandlers);
   const currentName = circle?.name ?? circles?.find((c) => c.id === selectedId)?.name ?? 'Your circle';
 
   const members = useMemo(() => {
@@ -170,6 +201,37 @@ export default function MapHome() {
           ]
         : []),
     ]);
+  };
+
+  const showSos = (alert: SosAlert) => {
+    if (!hasLocation(alert)) return;
+    mapRef.current?.animateToRegion(
+      { latitude: alert.lat, longitude: alert.lng, latitudeDelta: 0.01, longitudeDelta: 0.01 },
+      500,
+    );
+  };
+
+  const confirmDeleteHistory = () => {
+    setMenuOpen(false);
+    Alert.alert(
+      'Delete your location history?',
+      'Every location FamilyMap has stored for you is erased now, and your marker disappears from all your circles. If sharing is on, new locations start a fresh history.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { deleted } = await api.deleteMyHistory();
+              Alert.alert('Deleted', `${deleted} ${deleted === 1 ? 'location was' : 'locations were'} erased.`);
+            } catch (e) {
+              Alert.alert('Couldn’t delete', describeError(e).message ?? undefined);
+            }
+          },
+        },
+      ],
+    );
   };
 
   const toggleAlerts = async () => {
@@ -269,6 +331,9 @@ export default function MapHome() {
         {places.map((p) => (
           <PlaceOverlay key={p.id} place={p} onPress={openPlace} />
         ))}
+        {sosAlerts.filter(hasLocation).map((a) => (
+          <SosMarker key={a.id} alert={a} />
+        ))}
         {located.map((m) => (
           <MemberMarker key={m.userId} member={m} now={now} onPress={focusMember} />
         ))}
@@ -289,16 +354,30 @@ export default function MapHome() {
         <ConnectionBadge connection={connection} />
       </View>
 
+      <SosBanner
+        alerts={sosAlerts}
+        myUserId={user?.id}
+        now={now}
+        top={insets.top + spacing.sm + 48}
+        onShow={showSos}
+        onResolve={async (a) => applySosAlert(await api.resolveSos(a.id))}
+        onLayout={(e) => setSosHeight(e.nativeEvent.layout.height)}
+      />
+
       <EventBanner
         event={banner}
         myUserId={user?.id}
-        top={insets.top + spacing.sm + 48}
+        top={insets.top + spacing.sm + 48 + (sosAlerts.length > 0 ? sosHeight + spacing.sm : 0)}
         onPress={(e) => {
           dismissBanner();
           focusPlace(e.placeId);
         }}
         onDismiss={dismissBanner}
       />
+
+      {panelHeight > 0 ? (
+        <SosButton bottom={panelHeight + spacing.lg} onSend={async () => applySosAlert(await sendSos())} />
+      ) : null}
 
       {/* Roster panel */}
       <View
@@ -368,6 +447,7 @@ export default function MapHome() {
         onClose={() => setMenuOpen(false)}
         alertsOn={alertsOn}
         onToggleAlerts={() => void toggleAlerts()}
+        onDeleteHistory={confirmDeleteHistory}
       />
     </View>
   );

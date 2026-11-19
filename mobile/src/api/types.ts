@@ -98,6 +98,23 @@ export interface CircleEvent {
   at: string;
 }
 
+/** Live on /topic/family/{id}/sos; `active: false` means it was resolved. */
+export interface SosAlert {
+  id: string;
+  userId: string;
+  userName: string;
+  lat: number | null;
+  lng: number | null;
+  accuracy: number | null;
+  battery: number | null;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  resolvedById: string | null;
+  resolvedByName: string | null;
+}
+
 /** RFC 9457 problem+json, as returned by GlobalExceptionHandler. */
 export interface Problem {
   status: number;

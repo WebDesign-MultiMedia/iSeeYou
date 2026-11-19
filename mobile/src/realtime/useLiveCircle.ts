@@ -2,7 +2,7 @@ import { Client, type StompSubscription } from '@stomp/stompjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { api, freshAccessToken } from '@/api/client';
-import type { CircleEvent, FamilyDetail, LocationPoint, Member } from '@/api/types';
+import type { CircleEvent, FamilyDetail, LocationPoint, Member, SosAlert } from '@/api/types';
 import { WS_URL } from '@/config';
 import { applyLocation, applyMemberUpdate } from '@/features/map/members';
 
@@ -24,24 +24,31 @@ interface LiveCircle {
  * 1. Loads the circle over REST (members + latest points).
  * 2. Opens a STOMP connection and subscribes to `/topic/family/{id}/locations` (each point is
  *    merged with {@link applyLocation}) and `/topic/family/{id}/members` (pause/resume, merged
- *    with {@link applyMemberUpdate}) and `/topic/family/{id}/events` (arrivals, departures,
- *    place changes, handed to `onEvent`).
+ *    with {@link applyMemberUpdate}), `/topic/family/{id}/events` (arrivals, departures,
+ *    place changes, handed to `onEvent`) and `/topic/family/{id}/sos` (handed to `onSos`).
  * 3. On every (re)connect it reloads over REST, so points sent while the socket was down
  *    aren't lost.
  * 4. Disconnects while the app is in the background, which saves battery and data, and
  *    reconnects when it comes back.
  */
-export function useLiveCircle(familyId: string | null, onEvent?: (event: CircleEvent) => void): LiveCircle {
+export interface LiveHandlers {
+  onEvent?: (event: CircleEvent) => void;
+  onSos?: (alert: SosAlert) => void;
+  /** Called after every (re)connect, to reload anything that may have been missed. */
+  onReconnect?: () => void;
+}
+
+export function useLiveCircle(familyId: string | null, handlers: LiveHandlers = {}): LiveCircle {
   const [circle, setCircle] = useState<FamilyDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [connection, setConnection] = useState<Connection>('connecting');
   const familyRef = useRef(familyId);
-  const onEventRef = useRef(onEvent);
+  const handlersRef = useRef(handlers);
   useEffect(() => {
     familyRef.current = familyId;
-    onEventRef.current = onEvent;
-  }, [familyId, onEvent]);
+    handlersRef.current = handlers;
+  }, [familyId, handlers]);
 
   // Switching circles: clear the old roster while rendering, not in an effect, so the
   // previous circle's members never flash on screen (React's "adjust state on prop change").
@@ -115,10 +122,14 @@ export function useLiveCircle(familyId: string | null, onEvent?: (event: CircleE
             mergeMember(JSON.parse(message.body) as Member);
           }),
           client.subscribe(`/topic/family/${familyId}/events`, (message) => {
-            onEventRef.current?.(JSON.parse(message.body) as CircleEvent);
+            handlersRef.current.onEvent?.(JSON.parse(message.body) as CircleEvent);
+          }),
+          client.subscribe(`/topic/family/${familyId}/sos`, (message) => {
+            handlersRef.current.onSos?.(JSON.parse(message.body) as SosAlert);
           }),
         ];
         void reload(); // catch up on anything missed while disconnected
+        handlersRef.current.onReconnect?.();
       },
       onWebSocketClose: () => setConnection((s) => (s === 'offline' ? s : 'reconnecting')),
       onStompError: () => {

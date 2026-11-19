@@ -15,6 +15,7 @@ interface Props {
   /** Push notifications for arrivals/departures on this phone. */
   alertsOn: boolean;
   onToggleAlerts: () => void;
+  onDeleteHistory: () => void;
 }
 
 interface ItemProps {
@@ -44,7 +45,7 @@ function Item({ label, onPress, danger, selected }: ItemProps) {
 /** Bottom sheet: switch circle, join or create another, leave, sign out. */
 export function CircleMenu(props: Props) {
   const { visible, circles, selectedId, onSelect, onJoinOrCreate, onLeave, onSignOut, onClose } = props;
-  const { alertsOn, onToggleAlerts } = props;
+  const { alertsOn, onToggleAlerts, onDeleteHistory } = props;
   const t = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -72,6 +73,7 @@ export function CircleMenu(props: Props) {
           label={alertsOn ? 'Arrival notifications: on (tap to turn off)' : 'Turn on arrival notifications'}
           onPress={onToggleAlerts}
         />
+        <Item label="Delete my location history" onPress={onDeleteHistory} danger />
         {selectedId ? <Item label="Leave this circle" onPress={onLeave} danger /> : null}
         <Item label="Sign out" onPress={onSignOut} />
       </View>

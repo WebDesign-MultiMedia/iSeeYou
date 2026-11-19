@@ -10,6 +10,7 @@ import type {
   Place,
   Problem,
   RecordLocationResponse,
+  SosAlert,
   User,
 } from './types';
 
@@ -168,4 +169,15 @@ export const api = {
 
   unregisterPushToken: (token: string) =>
     request<void>('/api/me/push-token', { method: 'DELETE', body: { token } }),
+
+  /** Alerts every circle I'm in. Pressing again while one is open updates its position. */
+  raiseSos: (body: { lat?: number; lng?: number; accuracy?: number | null; battery?: number | null }) =>
+    request<SosAlert>('/api/sos', { method: 'POST', body }),
+
+  resolveSos: (alertId: string) => request<SosAlert>(`/api/sos/${alertId}/resolve`, { method: 'POST' }),
+
+  activeSos: (familyId: string) => request<SosAlert[]>(`/api/families/${familyId}/sos`),
+
+  /** Erases every stored location of mine, effective immediately. */
+  deleteMyHistory: () => request<{ deleted: number }>('/api/me/locations', { method: 'DELETE' }),
 };
