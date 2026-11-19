@@ -14,15 +14,16 @@ interface Props {
   onClose: () => void;
 }
 
-/** Bottom sheet: switch circle, join or create another, leave, sign out. */
-export function CircleMenu(props: Props) {
-  const { visible, circles, selectedId, onSelect, onJoinOrCreate, onLeave, onSignOut, onClose } = props;
-  const t = useTheme();
-  const insets = useSafeAreaInsets();
+interface ItemProps {
+  label: string;
+  onPress: () => void;
+  danger?: boolean;
+  selected?: boolean;
+}
 
-  const Item = ({ label, onPress, danger, selected }: {
-    label: string; onPress: () => void; danger?: boolean; selected?: boolean;
-  }) => (
+function Item({ label, onPress, danger, selected }: ItemProps) {
+  const t = useTheme();
+  return (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ selected }}
@@ -35,6 +36,13 @@ export function CircleMenu(props: Props) {
       </Text>
     </Pressable>
   );
+}
+
+/** Bottom sheet: switch circle, join or create another, leave, sign out. */
+export function CircleMenu(props: Props) {
+  const { visible, circles, selectedId, onSelect, onJoinOrCreate, onLeave, onSignOut, onClose } = props;
+  const t = useTheme();
+  const insets = useSafeAreaInsets();
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
