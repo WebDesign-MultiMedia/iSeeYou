@@ -25,7 +25,7 @@ and everyone in the circle sees each other on a map.
 - [x] **Step 2:** Family circles
 - [x] **Step 3:** Location ingestion + realtime
 - [x] **Step 4:** Mobile app: auth, join, live map
-- [ ] Step 5: Background location, battery, pause
+- [x] **Step 5:** Background location, battery, pause
 - [ ] Step 6: Saved places, geofencing, push
 - [ ] Step 7: SOS + history cleanup
 - [ ] Step 8: Portfolio polish
@@ -149,6 +149,7 @@ circle gets **404** for it, the same response as a circle that doesn't exist.
 | GET    | `/api/families/{id}` | A circle with its members |
 | GET    | `/api/families/{id}/members` | Just the members |
 | DELETE | `/api/families/{id}/members/me` | Leave the circle (`204`) |
+| PUT | `/api/families/{id}/members/me/sharing` | Step 5: pause or resume sharing in this circle, `{"enabled": false}`. Returns your member JSON and pushes it live to the circle. Idempotent |
 
 ### curl walkthrough: two users, one circle
 
@@ -198,6 +199,7 @@ future or older than the 7-day retention window.
 | Endpoint | `ws://localhost:8080/ws` (plain WebSocket, no SockJS) |
 | Auth | STOMP `CONNECT` header `Authorization: Bearer <accessToken>` |
 | Subscribe | `/topic/family/{familyId}/locations` (members only) |
+| Subscribe (step 5) | `/topic/family/{familyId}/members`: a member paused or resumed sharing (their full member JSON) |
 | Publish (optional) | `SEND /app/locations` with the same JSON as the REST body |
 | Your errors | subscribe to `/user/queue/errors` |
 
@@ -262,12 +264,28 @@ There's nothing to configure. In development the app calls the API on the machin
 Invite links use `familymap://invite/<code>`. The **Invite** button shares a link and the code.
 If the person isn't signed in yet, the app remembers the code until they sign in.
 
+### Share your own location (step 5)
+
+1. The bar above the roster says **You're not sharing your location**. Tap **Share**.
+2. Read what sharing means, then pick how: *only while using the app*, or *even when the app
+   is closed* (installed builds only, see below). The OS permission prompt follows.
+3. Your blue dot appears right away, and your avatar marker follows once the first point has
+   made the round trip, which the rest of the circle sees live.
+4. **Pause** in the bar hides you from that circle immediately, including your last known
+   spot. Everyone else's app updates live. **Resume** brings you back.
+
+**Expo Go can't run background location** (Expo's limitation, not ours), so there the app
+shares while it's open. In an installed build (`npx eas-cli@latest build --profile development`)
+the background option appears. Android then shows a permanent "Sharing your location"
+notification, and iOS shows the blue location pill, so tracking is never invisible.
+
 ### Checks
 
 ```bash
 cd mobile
 npm run typecheck    # tsc --noEmit
 npm test             # jest-expo unit tests
+npm run lint         # eslint-config-expo
 npx expo-doctor      # dependency / config health
 ```
 
@@ -282,6 +300,8 @@ cd backend
 - **Unit (step 2):** `FamilyServiceTest` (creator becomes admin, code collisions, joining again, outsiders get 404, admin handover, deleting the circle when the last member leaves) and `InviteCodeGeneratorTest`.
 - **Unit (step 3):** `LocationServiceTest` (sharing per circle, discarding points when sharing is paused everywhere, timestamp window, choosing between points with the same timestamp).
 - **Realtime:** `LocationRealtimeIntegrationTest` starts the real server on a random port and connects a real STOMP client: a posted point reaches a subscribed member live, `SEND /app/locations` works, bad payloads go to the sender's error queue, outsiders and bad tokens are rejected, and paused members are neither stored nor shown.
+- **Step 5:** `FamilyServiceTest` covers pause, resume, setting the same value again (no broadcast) and outsiders. `LocationRealtimeIntegrationTest` checks that pause and resume reach the circle live over STOMP, and that the endpoint rejects outsiders (404), missing tokens (401) and missing `enabled` (400).
+- **Mobile (step 5):** `policy.test.ts` (power modes, throttling, distance), `outbox.test.ts` (offline queue) and roster-update tests in `members.test.ts`.
 - **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
 
 ## Design notes (step 1)
@@ -358,3 +378,25 @@ cd backend
   ≥ 4.5:1 contrast.
 - **Expo Go first.** Everything in this step runs in Expo Go. Background location (step 5)
   needs a development build, which comes then.
+
+## Design notes (step 5)
+
+- **Consent before the prompt.** Nothing is tracked until the user has read a plain-language
+  screen: who sees it, pause, battery, 7-day retention. The choice is remembered per sign-in,
+  and signing out stops tracking and forgets it.
+- **Pause is per circle and total.** A paused member shows up as "paused" with no location at
+  all, not even their last one. The change is pushed live on `/topic/family/{id}/members`.
+  When the server reports sharing is paused in every circle, the phone stops the GPS entirely
+  instead of sending points that would be thrown away.
+- **Battery-aware.** High precision with 25 m / 15 s updates normally. Balanced precision with
+  100 m / 1 min at ≤ 20% or in Low Power Mode. Coarse with 300 m / 5 min at ≤ 10%. Full
+  precision whenever charging. A heartbeat (5–30 min) keeps "last seen" fresh while standing
+  still, and jitter and duplicate fixes are filtered before upload.
+- **Offline-tolerant, not hoarding.** Failed uploads wait in an in-memory queue (max 200,
+  under 6 days old) and go out oldest first with their real timestamps. The trail is never
+  written to disk.
+- **Never invisible.** Background tracking runs as an Android foreground service with a
+  permanent notification and shows the blue location pill on iOS.
+- **One code path.** The foreground watcher and the background task both go through the
+  same `reporter`, so throttling, battery handling and the offline queue behave the same in
+  both modes.
