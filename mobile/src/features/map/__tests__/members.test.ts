@@ -1,5 +1,5 @@
 import type { LocationPoint, Member } from '@/api/types';
-import { applyLocation, batteryTone, colorFor, initials, lastSeenLabel, statusLine } from '../members';
+import { applyLocation, applyMemberUpdate, batteryTone, colorFor, initials, lastSeenLabel, statusLine } from '../members';
 
 const NOW = Date.parse('2026-11-19T12:00:00Z');
 
@@ -91,5 +91,21 @@ describe('small helpers', () => {
   it('colorFor is stable per user', () => {
     expect(colorFor('15360958-d236')).toBe(colorFor('15360958-d236'));
     expect(colorFor('x')).toMatch(/^#[0-9a-f]{6}$/);
+  });
+});
+
+describe('applyMemberUpdate', () => {
+  it('replaces the member, so pausing removes their location', () => {
+    const roster = [member('mom'), member('leo', { lastLocation: point('leo', '2026-11-19T11:00:00Z') })];
+    const next = applyMemberUpdate(roster, member('leo', { sharingEnabled: false, lastLocation: null }));
+    expect(next).not.toBe(roster);
+    expect(next[1].sharingEnabled).toBe(false);
+    expect(next[1].lastLocation).toBeNull();
+    expect(next[0]).toBe(roster[0]);
+  });
+
+  it('ignores members not in the roster', () => {
+    const roster = [member('mom')];
+    expect(applyMemberUpdate(roster, member('eve'))).toBe(roster);
   });
 });
