@@ -1,499 +1,271 @@
 # FamilyMap
 
-A **consent-based** family location-sharing app (a lightweight Life360).
-A family admin creates a circle, members join by invite code and share their live location,
-and everyone in the circle sees each other on a map.
+A **consent-based** family location-sharing app, a lightweight Life360. A family admin creates
+a circle, members join with an invite code, and everyone in the circle sees each other live on
+a map, gets "Leo arrived at School" alerts, and can send an SOS.
 
-> **Transparency by design.** Every member opts in, always sees a visible "sharing on"
-> indicator, and can pause sharing at any time. FamilyMap does not support hidden or
-> covert tracking. For a minor, a guardian sets it up on a device they manage, and the
-> indicator stays visible to the child.
+> **Transparency by design.** Every member opts in on a plain-language screen before any OS
+> prompt, always sees a "sharing on" indicator, and can pause per circle at any time. There is
+> no hidden or covert mode, and the server enforces consent, not just the app.
 
-| Layer    | Tech |
-|----------|------|
-| Mobile   | React Native 0.88 / Expo SDK 58, Expo Router, react-native-maps, @stomp/stompjs, expo-secure-store |
-| Backend  | Java 21, Spring Boot 3.5 (Web, Security, Data JPA, Validation, Actuator) |
-| Auth     | Stateless JWT (access + refresh), BCrypt |
-| Realtime | WebSocket / STOMP (Spring simple broker) |
-| Database | MySQL 8 + Flyway |
-| Push     | Firebase Cloud Messaging *(step 6)* |
-| Deploy   | Docker + docker-compose |
+| Live map | Consent first | Saved places | SOS |
+|---|---|---|---|
+| ![Live map with family members](docs/screenshots/map.png) | ![Consent screen](docs/screenshots/consent.png) | ![Saved places on the map](docs/screenshots/places.png) | ![SOS banner and pin](docs/screenshots/sos.png) |
 
-## Project status
+## Features
 
-- [x] **Step 1:** Backend scaffold + JWT auth
-- [x] **Step 2:** Family circles
-- [x] **Step 3:** Location ingestion + realtime
-- [x] **Step 4:** Mobile app: auth, join, live map
-- [x] **Step 5:** Background location, battery, pause
-- [x] **Step 6:** Saved places, geofencing, push
-- [x] **Step 7:** SOS + history cleanup
-- [ ] Step 8: Portfolio polish
+- **Live map.** Members' markers move in real time over WebSocket/STOMP, with last-seen time,
+  battery and an accuracy halo. A *Live / Reconnecting* badge shows when data might be stale.
+- **Circles.** Create one, invite with a code or a `familymap://invite/…` link, be in several at
+  once. Admins are handed over automatically when the last one leaves.
+- **Battery-aware sharing.** Background tracking in installed builds, with three power profiles
+  that switch with the battery level and Low Power Mode. Fixes that fail to upload wait in a
+  small in-memory queue and go out later with their real timestamps.
+- **Places and arrival alerts.** Long-press the map to save Home or School. Arrivals and
+  departures are detected on the server with hysteresis and an accuracy gate, then shown as a
+  banner and sent as push notifications.
+- **SOS.** Hold for 2 seconds to alert every circle you're in with your position, even circles
+  you've paused. Helpers see a red banner and pin and can mark it handled.
+- **Your data, briefly.** Location points expire after 7 days and SOS alerts after 30.
+  *Delete my location history* erases everything at once.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Phone["📱 Expo app (React Native)"]
+    UI["Map · roster · SOS<br/>Expo Router"]
+    BG["Background task<br/>expo-location + task-manager"]
+    Q["Offline queue<br/>(memory only)"]
+    BG --> Q
+  end
+
+  subgraph API["☕ Spring Boot API (Java 21)"]
+    SEC["Spring Security<br/>JWT filter + STOMP interceptor"]
+    SVC["Services<br/>authorization · consent · geofencing · SOS"]
+    BR["After-commit broadcasters"]
+    PN["Push notifier (async)"]
+    RJ["Retention job (hourly)"]
+    SEC --> SVC --> BR
+    SVC --> PN
+  end
+
+  DB[("MySQL 8<br/>Flyway V1–V5")]
+  EXPO["Expo Push Service<br/>→ APNs / FCM"]
+
+  UI -- "REST /api/** (JWT)" --> SEC
+  Q -- "POST /api/locations" --> SEC
+  UI <-- "STOMP /ws<br/>/topic/family/{id}/locations · members · events · sos" --> BR
+  SVC <--> DB
+  RJ --> DB
+  PN --> EXPO -. "push" .-> Phone
+```
+
+**How a location update flows:** the phone posts a fix. The service stores it only for circles
+where the member is sharing, runs the geofence check in the same transaction, and commits.
+Only after the commit, broadcasters fan the point and any arrival out to those circles' STOMP
+topics, and the push notifier calls Expo's push service off the request thread.
+
+| Layer | Tech |
+|---|---|
+| Mobile | React Native 0.88 / Expo SDK 58, Expo Router, react-native-maps, @stomp/stompjs, expo-location, expo-task-manager, expo-notifications, expo-secure-store |
+| Backend | Java 21, Spring Boot 3.5 (Web, Security, Data JPA, WebSocket, Validation, Actuator) |
+| Auth | Stateless JWT (access + refresh), BCrypt |
+| Realtime | WebSocket / STOMP, Spring simple broker |
+| Database | MySQL 8, Flyway migrations, H2 (MySQL mode) in tests |
+| Push | Expo Push Service, which delivers through APNs and FCM |
+| Ops | Docker multi-stage image (non-root), docker compose, GitHub Actions, JaCoCo |
+
+## Security & consent design
+
+**Consent is enforced by the server, not just shown by the app.**
+- A point is stored and shown only in circles where the member has sharing on. Paused
+  everywhere means the point is discarded, not stored. A paused member's last known spot is
+  hidden too, and pausing clears their place presence, so resuming never reveals where they went.
+- The tracked person always knows: the consent screen comes before any OS prompt, the
+  "sharing on" bar is always visible, Android shows a permanent notification and iOS the blue
+  location pill. Nothing in the app hides it from its user.
+- The one exception is visible and deliberate: **SOS** reaches paused circles, because holding
+  it for 2 seconds is an explicit request to be found. The button's accessibility hint says so.
+
+**Authorization lives in the service layer.**
+- Every circle-scoped operation, over REST or WebSocket, goes through one check
+  (`FamilyAccessService.requireMember`). The STOMP interceptor applies the same rule to
+  `SUBSCRIBE`, and clients can never `SEND` directly to a `/topic`.
+- Strangers get **404, not 403**, so circle ids can't be probed.
+  [`AuthorizationIntegrationTest`](backend/src/test/java/com/familymap/controller/AuthorizationIntegrationTest.java)
+  pins this down endpoint by endpoint.
+- Rosters never expose emails. Members see name, avatar, role and sharing status only.
+
+**Credentials and tokens.**
+- BCrypt passwords. Login gives the same answer, in about the same time, for an unknown email
+  and a wrong password, so accounts can't be enumerated.
+- 15-minute access tokens and 7-day refresh tokens with a typed claim, so one can't be used as
+  the other. The app keeps them in the iOS Keychain / Android Keystore (`expo-secure-store`).
+- The JWT travels in the STOMP `CONNECT` frame, never in a URL where access logs would keep it.
+- The API refuses to start without a JWT secret of at least 256 bits. Every secret comes from env vars.
+
+**Data minimization.** Locations expire after 7 days and SOS alerts after 30, purged hourly in
+small batches. The offline queue never touches disk. Arrival history isn't stored, only
+"who is inside which place now". Push tokens are removed on sign-out, so a shared phone
+doesn't keep getting someone else's alerts.
+
+More detail and the tradeoffs behind each choice: **[docs/DESIGN.md](docs/DESIGN.md)**.
+
+## Quick start
+
+**Prerequisites:** Docker Desktop. To run the backend tests outside Docker you also need JDK 21.
+For the app you need Node 22.13+ and the Expo Go app on a phone on the same Wi-Fi.
+
+```bash
+# 1. Secrets
+cp .env.example .env
+sed -i '' "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" .env   # macOS (Linux: sed -i)
+#    and set DB_PASSWORD / MYSQL_ROOT_PASSWORD in .env
+
+# 2. API + MySQL
+docker compose up --build -d
+curl http://localhost:8080/actuator/health        # {"status":"UP"}
+
+# 3. App
+cd mobile
+npm install
+npx expo start                                    # scan the QR code with your phone
+```
+
+The app finds the API on the machine running `expo start`, so there's nothing to configure on
+the same Wi-Fi. To use another server, set `EXPO_PUBLIC_API_URL` in `mobile/.env`.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `JWT_SECRET` | **yes** | Base64 HMAC key, at least 32 bytes |
+| `DB_PASSWORD`, `MYSQL_ROOT_PASSWORD` | **yes** | MySQL credentials |
+| `DB_NAME`, `DB_USER` / `DB_URL` | no | Default `familymap` / full JDBC URL for hosted databases |
+| `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | no | Default `15m` / `7d` |
+| `CORS_ALLOWED_ORIGINS` | no | Default `*` (dev only) |
+| `PUSH_ENABLED`, `EXPO_ACCESS_TOKEN` | no | Push via Expo (default on) / only with Enhanced push security |
+| `RETENTION_LOCATIONS` / `RETENTION_SOS` | no | Default `7d` / `30d` |
+
+> **macOS firewall:** if the phone can't reach the API or Metro, allow incoming connections for
+> Docker and Node in *System Settings → Network → Firewall → Options*, then check from the phone
+> or another machine: `curl http://<your-mac-ip>:8080/actuator/health`.
+
+### Try it without a second phone
+
+A fake family member can join your circle and walk a 300 m loop around any point:
+
+```bash
+node tools/simulate-walk.mjs --code <INVITE-CODE> --lat <lat> --lng <lng>
+```
+
+Save a place on their loop (long-press the map) and you'll get *"Leo arrived at …"* /
+*"Leo left …"* banners. `tools/ws-listen.mjs` prints a circle's live STOMP traffic.
+
+### Using the app
+
+1. **Share your location.** Tap *Share* in the bar above the roster, read what sharing means,
+   then choose *only while using the app* or *even when closed* (installed builds only). *Pause*
+   hides you from that circle immediately.
+2. **Places.** Long-press the map, name the place and pick a size. Tap its tag to remove it
+   (if you added it, or you're an admin).
+3. **SOS.** Hold the red button for 2 s. *I'm OK* closes it. Others see *Show on map* and *Mark handled*.
+4. **Circle menu.** Switch or leave circles, turn arrival notifications on, or *Delete my location history*.
+
+Expo Go can't run background location, and on Android it can't receive push either. A
+development build adds both: see [docs/DEPLOY.md](docs/DEPLOY.md#building-the-app-with-eas).
+
+## API
+
+REST under `/api`, STOMP at `/ws`, errors as RFC 9457 `problem+json`. Full reference with curl
+walkthroughs: **[docs/API.md](docs/API.md)**.
+
+| Area | Endpoints |
+|---|---|
+| Auth | `POST /auth/register` · `POST /auth/login` · `POST /auth/refresh` · `GET /auth/me` |
+| Circles | `POST /families` · `POST /families/join` · `GET /families` · `GET /families/{id}` · `GET /families/{id}/members` · `PUT /families/{id}/members/me/sharing` · `DELETE /families/{id}/members/me` |
+| Locations | `POST /locations` (or STOMP `SEND /app/locations`) · `DELETE /me/locations` |
+| Places | `GET` / `POST /families/{id}/places` · `DELETE /families/{id}/places/{placeId}` |
+| SOS | `POST /sos` · `POST /sos/{id}/resolve` · `GET /families/{id}/sos` |
+| Push | `PUT` / `DELETE /me/push-token` |
+| Live topics | `/topic/family/{id}/locations` · `/members` · `/events` · `/sos` |
+
+## Tests
+
+```bash
+cd backend && ./mvnw verify          # 137 tests + coverage report in target/site/jacoco/
+cd mobile  && npm test               # 58 tests; also: npm run typecheck, npm run lint, npx expo-doctor
+```
+
+**Backend: 96% line coverage, 81% branch coverage.** CI runs everything on each push.
+
+- **Unit tests for the rules:** JWT (expiry, tampering, token-type confusion), auth (no account
+  enumeration), circles (admin handover, invite collisions), consent filtering of locations,
+  geofence math (hysteresis, accuracy gate), geofence state (silent first sighting, no
+  rewinding on late uploads), places permissions, SOS (all circles, re-press updates), and push
+  (batching, dead tokens dropped, failures contained).
+- **Integration tests through the real stack:** full Spring context, security chain and Flyway
+  migrations on H2 in MySQL mode. They cover auth and circle flows with two or three real
+  users, and the [authorization contract](backend/src/test/java/com/familymap/controller/AuthorizationIntegrationTest.java)
+  for every endpoint. The retention purge runs against the real schema.
+- **Realtime end to end:** the server runs on a random port and real STOMP clients are
+  connected. A posted point reaches the circle live. Pauses hide it. Outsiders and bad tokens
+  can't subscribe. Leo walks into Home and Mom gets the event and a push (through a mocked
+  Expo client). An SOS reaches a paused member's circle.
+- **Mobile unit tests:** power-profile policy, offline queue, live roster merging, places and SOS ordering and wording.
+
+## Deploy
+
+- **API:** one Docker image plus MySQL. Railway is the simplest (API and database in one
+  project), and Fly.io and Render work with an external MySQL.
+- **App:** EAS Build for development, preview (APK) and store builds, plus push credentials.
+
+Step by step: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
 
 ## Repository layout
 
 ```
 .
-├── docker-compose.yml        # MySQL 8 + API
-├── .env.example              # copy to .env (secrets live here, never committed)
-├── tools/
-│   ├── ws-listen.mjs         # zero-dependency STOMP listener for manual testing (Node 22+)
-│   └── simulate-walk.mjs     # demo: a fake family member walking a loop
-├── mobile/                   # Expo app (see "Mobile app" below)
+├── backend/                      Spring Boot API
+│   ├── Dockerfile                multi-stage → slim JRE, non-root, health check
+│   └── src/main/java/com/familymap/
+│       ├── controller/           thin REST endpoints: validate, delegate
+│       ├── service/              business rules, authorization, consent, geofencing, SOS
+│       ├── realtime/             STOMP auth interceptor, after-commit broadcasters
+│       ├── push/                 Expo push client + notifier
+│       ├── retention/            hourly purge job
+│       ├── security/  config/    JWT, Spring Security, WebSocket, async, scheduling
+│       ├── domain/  repository/  dto/  exception/
+│       └── resources/db/migration/   Flyway V1–V5
+├── mobile/                       Expo app
 │   └── src/
-│       ├── app/              # Expo Router screens: (auth)/, (app)/, invite/[code]
-│       ├── api/              # typed API client + token refresh
-│       ├── auth/             # secure session storage, AuthProvider
-│       ├── realtime/         # useLiveCircle: REST + STOMP live roster
-│       ├── features/map/     # markers, roster, pure helpers (unit tested)
-│       └── components/       # Button, TextField, Avatar, FormScreen
-└── backend/
-    ├── Dockerfile            # multi-stage build -> slim JRE, non-root
-    ├── pom.xml
-    └── src/main/java/com/familymap/
-        ├── config/           # Spring Security, CORS, beans
-        ├── controller/       # REST endpoints (thin: validate, delegate)
-        ├── service/          # business rules + authorization
-        ├── repository/       # Spring Data JPA
-        ├── domain/           # JPA entities
-        ├── dto/              # request/response records
-        ├── realtime/         # STOMP auth interceptor, broadcaster, /app message handlers
-        ├── security/         # JWT issue/verify, auth filter, 401 handler
-        └── exception/        # RFC 9457 problem+json error mapping
+│       ├── app/                  Expo Router screens: (auth)/, (app)/, invite/[code]
+│       ├── api/  auth/           typed client with token refresh, secure session
+│       ├── realtime/             useLiveCircle: REST snapshot + STOMP live updates
+│       ├── location/             consent, power policy, offline queue, background task
+│       ├── notifications/        push opt-in, Android channels
+│       └── features/             map, places, sos (UI + pure, unit-tested helpers)
+├── tools/                        simulate-walk.mjs, ws-listen.mjs (Node 22+, no dependencies)
+├── docs/                         API, DESIGN, DEPLOY, screenshots
+├── docker-compose.yml            MySQL 8 + API
+└── .github/workflows/ci.yml      backend verify, Docker build, mobile checks
 ```
 
-## Running locally
-
-### Prerequisites
-- Docker Desktop (or Docker Engine with the Compose plugin)
-- *Optional, to run tests or the API outside Docker:* JDK 21. The Maven wrapper (`./mvnw`) downloads Maven for you.
-
-### 1. Configure secrets
-
-```bash
-cp .env.example .env
-# Generate a JWT signing key and write it into .env:
-sed -i '' "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" .env   # macOS
-# sed -i  "s|^JWT_SECRET=.*|JWT_SECRET=$(openssl rand -base64 48)|" .env   # Linux
-```
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `JWT_SECRET` | **yes** | Base64 HMAC key, at least 32 bytes. The app refuses to start without it. |
-| `DB_PASSWORD`, `MYSQL_ROOT_PASSWORD` | **yes** | MySQL credentials (set your own values) |
-| `DB_NAME`, `DB_USER` | no | Default `familymap` |
-| `JWT_ACCESS_TTL` / `JWT_REFRESH_TTL` | no | Default `15m` / `7d` |
-| `CORS_ALLOWED_ORIGINS` | no | Default `*` (dev only) |
-
-### 2. Start the stack
-
-```bash
-docker compose up --build
-# wait for: "Started FamilyMapApplication"
-curl http://localhost:8080/actuator/health      # {"status":"UP",...}
-```
-
-## API (step 1)
-
-All errors are returned as `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/auth/register` | none | Create an account, returns tokens (`201`) |
-| POST | `/api/auth/login` | none | Exchange email + password for tokens |
-| POST | `/api/auth/refresh` | none | Exchange a refresh token for a new pair |
-| GET  | `/api/auth/me` | Bearer | The current user |
-
-### curl walkthrough
-
-```bash
-# Register
-curl -s -X POST http://localhost:8080/api/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Ana","email":"ana@example.com","password":"s3cret-pass"}'
-
-# Login, then keep the access token in a shell variable (uses jq: brew install jq)
-TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"ana@example.com","password":"s3cret-pass"}' | jq -r .accessToken)
-
-# Who am I?
-curl -s http://localhost:8080/api/auth/me -H "Authorization: Bearer $TOKEN"
-
-# Without a token -> 401 problem+json
-curl -i http://localhost:8080/api/auth/me
-```
-
-Example login response:
-
-```json
-{
-  "accessToken": "eyJhbGciOiJIUzM4NCJ9...",
-  "refreshToken": "eyJhbGciOiJIUzM4NCJ9...",
-  "tokenType": "Bearer",
-  "expiresIn": 900,
-  "user": { "id": "3f1c…", "name": "Ana", "email": "ana@example.com", "avatarUrl": null, "createdAt": "2026-11-16T09:00:00Z" }
-}
-```
-
-## API (step 2): family circles
-
-All endpoints require `Authorization: Bearer <accessToken>`. Anyone who isn't a member of a
-circle gets **404** for it, the same response as a circle that doesn't exist.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST   | `/api/families` | Create a circle `{"name":"…"}`; you become `ADMIN` (`201`) |
-| POST   | `/api/families/join` | Join with `{"inviteCode":"K7QM-3XPA"}` (case, spaces and dash ignored; joining again is harmless) |
-| GET    | `/api/families` | Circles you belong to, with your role and the member count |
-| GET    | `/api/families/{id}` | A circle with its members |
-| GET    | `/api/families/{id}/members` | Just the members |
-| DELETE | `/api/families/{id}/members/me` | Leave the circle (`204`) |
-| PUT | `/api/families/{id}/members/me/sharing` | Step 5: pause or resume sharing in this circle, `{"enabled": false}`. Returns your member JSON and pushes it live to the circle. Idempotent |
-
-### curl walkthrough: two users, one circle
-
-```bash
-API=http://localhost:8080
-reg() { curl -s -X POST $API/api/auth/register -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$1\",\"email\":\"$2\",\"password\":\"s3cret-pass\"}" | jq -r .accessToken; }
-
-MOM=$(reg Mom mom@example.com)
-LEO=$(reg Leo leo@example.com)
-
-# Mom creates the circle and gets the invite code
-CIRCLE=$(curl -s -X POST $API/api/families -H "Authorization: Bearer $MOM" \
-  -H 'Content-Type: application/json' -d '{"name":"The Smiths"}')
-FAMILY_ID=$(echo "$CIRCLE" | jq -r .id); CODE=$(echo "$CIRCLE" | jq -r .inviteCode)
-
-# Leo joins with the code
-curl -s -X POST $API/api/families/join -H "Authorization: Bearer $LEO" \
-  -H 'Content-Type: application/json' -d "{\"inviteCode\":\"$CODE\"}"
-
-# Both now see the same roster
-curl -s $API/api/families/$FAMILY_ID -H "Authorization: Bearer $LEO" | jq
-
-# Leo leaves
-curl -i -X DELETE $API/api/families/$FAMILY_ID/members/me -H "Authorization: Bearer $LEO"
-```
-
-## API (step 3): locations + realtime
-
-### REST
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/locations` | Report a point `{"lat","lng","accuracy?","battery?","recordedAt?"}`. `201` if shared, `200` with `"shared":false` if sharing is paused in every circle (the point is **discarded**) |
-
-`GET /api/families/{id}` and `/members` now include each member's `lastLocation`. It is
-`null` for a member who has paused sharing in that circle.
-
-Validation: `lat` must be within ±90, `lng` within ±180, `battery` 0–100, `accuracy` ≥ 0 meters.
-`recordedAt` defaults to the server time and is rejected if it's more than 2 minutes in the
-future or older than the 7-day retention window.
-
-### WebSocket (STOMP)
-
-| | |
-|---|---|
-| Endpoint | `ws://localhost:8080/ws` (plain WebSocket, no SockJS) |
-| Auth | STOMP `CONNECT` header `Authorization: Bearer <accessToken>` |
-| Subscribe | `/topic/family/{familyId}/locations` (members only) |
-| Subscribe (step 5) | `/topic/family/{familyId}/members`: a member paused or resumed sharing (their full member JSON) |
-| Subscribe (step 6) | `/topic/family/{familyId}/events`: `ARRIVED`, `LEFT`, `PLACE_ADDED`, `PLACE_REMOVED` |
-| Subscribe (step 7) | `/topic/family/{familyId}/sos`: an SOS was raised, moved, or resolved (`"active": false`) |
-| Publish (optional) | `SEND /app/locations` with the same JSON as the REST body |
-| Your errors | subscribe to `/user/queue/errors` |
-
-Every message on the topic looks like this:
-
-```json
-{ "userId": "15360958-…", "lat": 40.4168, "lng": -3.7038, "accuracy": 8.0, "battery": 64,
-  "recordedAt": "2026-11-19T17:17:06.928680Z" }
-```
-
-### Try it: watch a location arrive live
-
-```bash
-# Terminal 1: reuse MOM, LEO, CODE and FAMILY_ID from the step 2 walkthrough (Leo must have joined)
-TOKEN=$MOM node tools/ws-listen.mjs $FAMILY_ID
-
-# Terminal 2: Leo reports a location
-curl -s -X POST http://localhost:8080/api/locations -H "Authorization: Bearer $LEO" \
-  -H 'Content-Type: application/json' -d '{"lat":40.4168,"lng":-3.7038,"accuracy":8,"battery":64}'
-```
-
-Terminal 1 prints the point immediately:
-
-```
-12:17:06 PM  user 15360958  40.4168, -3.7038  ±8m  battery 64%  (recorded 2026-11-19T17:17:06.928680Z)
-```
-
-## API (step 6): saved places and push
-
-| Method | Path | |
-|---|---|---|
-| GET | `/api/families/{id}/places` | The circle's saved places |
-| POST | `/api/families/{id}/places` | `{"name","lat","lng","radiusM"}` (50–2000 m, at most 20 per circle). Any member |
-| DELETE | `/api/families/{id}/places/{placeId}` | Whoever added it, or an admin; otherwise `403` |
-| PUT | `/api/me/push-token` | `{"token":"ExponentPushToken[…]","platform":"ios"\|"android"}`. Registers this phone for arrival alerts |
-| DELETE | `/api/me/push-token` | `{"token":"…"}`. The app calls this on sign-out |
-
-An event on `/topic/family/{id}/events`:
-
-```json
-{ "type": "ARRIVED", "familyId": "…", "placeId": "…", "placeName": "Home",
-  "userId": "…", "userName": "Leo", "at": "2026-11-19T18:02:11Z" }
-```
-
-Arrivals and departures are also pushed through Expo's push service to every *other* member
-who turned notifications on. Set `PUSH_ENABLED=false` to keep them in-app only.
-
-## API (step 7): SOS and data retention
-
-| Method | Path | |
-|---|---|---|
-| POST | `/api/sos` | `{"lat?","lng?","accuracy?","battery?"}`. Alerts **every** circle you're in, even ones where sharing is paused. `201` new, `200` if it updated your open SOS. `400` if you're in no circle |
-| POST | `/api/sos/{id}/resolve` | The sender ("I'm OK") or anyone in an alerted circle ("handled"). Idempotent. Others get `404` |
-| GET | `/api/families/{id}/sos` | Open SOS alerts in the circle |
-| DELETE | `/api/me/locations` | Erase all your stored locations now. Returns `{"deleted": n}` and clears your marker live |
-
-Retention runs hourly: location points older than `RETENTION_LOCATIONS` (default `7d`) and SOS
-alerts older than `RETENTION_SOS` (`30d`) are deleted in batches of 1,000.
-
-## Mobile app (step 4)
-
-Map-first: your family on a full-screen map, with a panel listing each member's last-seen
-time, battery and sharing status. Markers move as soon as a new point arrives over the
-WebSocket.
-
-### Run it on your phone (Expo Go)
-
-You need the **Expo Go** app on your phone, with the phone on the **same Wi-Fi** as this computer.
-
-```bash
-docker compose up -d                 # the API must be running
-cd mobile
-npm install
-npx expo start                       # scan the QR code with your phone's camera (iOS) or Expo Go (Android)
-```
-
-There's nothing to configure. In development the app calls the API on the machine running
-`expo start` (port 8080). To use another server, set `EXPO_PUBLIC_API_URL` in `mobile/.env`
-(see `mobile/.env.example`).
-
-> **macOS firewall:** if the app says it can't reach FamilyMap, allow incoming connections
-> for Docker in *System Settings → Network → Firewall → Options*, then check from another
-> device: `curl http://<your-mac-ip>:8080/actuator/health`.
-
-### Watch markers move
-
-1. In the app, register and create a circle. The panel shows its invite code.
-2. On your computer, start a fake family member who joins and walks a loop:
-   ```bash
-   node tools/simulate-walk.mjs --code <INVITE-CODE> --lat <your-lat> --lng <your-lng>
-   ```
-3. Their marker appears and moves every 2 seconds, and the battery slowly drains.
-
-Invite links use `familymap://invite/<code>`. The **Invite** button shares a link and the code.
-If the person isn't signed in yet, the app remembers the code until they sign in.
-
-### Share your own location (step 5)
-
-1. The bar above the roster says **You're not sharing your location**. Tap **Share**.
-2. Read what sharing means, then pick how: *only while using the app*, or *even when the app
-   is closed* (installed builds only, see below). The OS permission prompt follows.
-3. Your blue dot appears right away, and your avatar marker follows once the first point has
-   made the round trip, which the rest of the circle sees live.
-4. **Pause** in the bar hides you from that circle immediately, including your last known
-   spot. Everyone else's app updates live. **Resume** brings you back.
-
-**Expo Go can't run background location** (Expo's limitation, not ours), so there the app
-shares while it's open. In an installed build (`npx eas-cli@latest build --profile development`)
-the background option appears. Android then shows a permanent "Sharing your location"
-notification, and iOS shows the blue location pill, so tracking is never invisible.
-
-### Saved places and arrival alerts (step 6)
-
-1. **Long-press the map** where you want a place, then name it and pick a size.
-2. Everyone in the circle sees it as a dashed circle. Tap its name tag to remove it (if you
-   added it, or you're an admin).
-3. When someone walks in or out, everyone else sees a banner, "Leo arrived at Home". Tap it
-   to jump to the place. To try it with the simulator, save a place on Leo's loop:
-   `node tools/simulate-walk.mjs --code <CODE> --lat <lat> --lng <lng>` walks a 300 m circle
-   around that point.
-4. **Push notifications** (circle menu → *Turn on arrival notifications*) need an EAS
-   project id (`npx eas-cli@latest init`) and, on Android, an installed build. Expo Go on
-   Android can't receive push. Without them the app says so, and banners still work while
-   it's open.
-
-### SOS and your history (step 7)
-
-1. **Hold the red SOS button** (bottom right) for 2 seconds. The ring fills and the phone
-   buzzes, and every circle you're in is alerted with your position, even circles you've
-   paused. Screen-reader users get a "Send SOS" action with a confirmation instead.
-2. Everyone else sees a red banner, "Leo needs help · sent just now · 23% battery", and a
-   red pin. *Show on map* jumps to it and *Mark handled* closes it for everyone. The sender
-   sees *I'm OK*.
-3. **Circle menu → Delete my location history** erases everything stored about where you've
-   been, and your marker disappears from everyone's map right away.
-
-### Checks
-
-```bash
-cd mobile
-npm run typecheck    # tsc --noEmit
-npm test             # jest-expo unit tests
-npm run lint         # eslint-config-expo
-npx expo-doctor      # dependency / config health
-```
-
-## Tests
-
-```bash
-cd backend
-./mvnw test
-```
-
-- **Unit:** `JwtServiceTest` (expiry, tampering, wrong key, token-type confusion) and `AuthServiceTest` (hashing, email normalization, duplicate email, generic login errors).
-- **Unit (step 2):** `FamilyServiceTest` (creator becomes admin, code collisions, joining again, outsiders get 404, admin handover, deleting the circle when the last member leaves) and `InviteCodeGeneratorTest`.
-- **Unit (step 3):** `LocationServiceTest` (sharing per circle, discarding points when sharing is paused everywhere, timestamp window, choosing between points with the same timestamp).
-- **Realtime:** `LocationRealtimeIntegrationTest` starts the real server on a random port and connects a real STOMP client: a posted point reaches a subscribed member live, `SEND /app/locations` works, bad payloads go to the sender's error queue, outsiders and bad tokens are rejected, and paused members are neither stored nor shown.
-- **Step 5:** `FamilyServiceTest` covers pause, resume, setting the same value again (no broadcast) and outsiders. `LocationRealtimeIntegrationTest` checks that pause and resume reach the circle live over STOMP, and that the endpoint rejects outsiders (404), missing tokens (401) and missing `enabled` (400).
-- **Mobile (step 5):** `policy.test.ts` (power modes, throttling, distance), `outbox.test.ts` (offline queue) and roster-update tests in `members.test.ts`.
-- **Step 6:** `GeofenceTest` (hysteresis, accuracy gate, distance), `GeofenceServiceTest` (silent first sighting, arrive, leave, no rewinding on late uploads), `PlaceServiceTest` (permissions, cap), `PushNotifierTest` (everyone but the mover, dead tokens dropped, failures swallowed) and `PlacesIntegrationTest` (real server: Leo walks in and out of Home, Mom gets live events and a push via a mocked Expo client, and nothing leaks out of a pause).
-- **Step 7:** `SosServiceTest` (all circles, no-location SOS, re-press updates, outsiders, idempotent resolve), `RetentionJobIntegrationTest` (real schema, several batches, only expired rows go), extra `PushNotifierTest` cases (high-priority SOS channel) and `SosIntegrationTest` (an SOS reaches a paused member's circle live and as push, gets updated and handled, and deleting history clears the marker live).
-- **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
-
-## Design notes (step 1)
-
-- **Stateless JWT, two token types.** Access tokens are short-lived (15 min). Refresh tokens
-  (7 days) carry `typ=REFRESH` and are rejected where an access token is expected.
-  *Tradeoff:* stateless refresh tokens can't be revoked before they expire. Storing
-  refresh tokens server-side with rotation is a planned hardening step.
-- **No account enumeration.** Login returns the same message for an unknown email and for a
-  wrong password, and still runs a BCrypt comparison when the email doesn't exist, so the
-  two cases take about the same time.
-- **Flyway owns the schema.** Hibernate runs with `ddl-auto=validate`, so a mismatch between
-  entity and schema fails at startup instead of silently changing the database.
-- **UUIDs as `BINARY(16)`.** Uses less space and indexes better than `CHAR(36)`.
-- **Fail fast on config.** The app refuses to start if `JWT_SECRET` is missing or shorter than 256 bits.
-
-## Design notes (step 2)
-
-- **Authorization in the service layer.** `FamilyAccessService.requireMember` is the single
-  check every circle-scoped operation calls first, and later steps (locations, places, SOS)
-  reuse it. A controller can't skip it.
-- **404 instead of 403 for outsiders.** A stranger can't tell whether a circle id exists.
-- **Invite codes** look like `K7QM-3XPA`. They use 8 characters from `SecureRandom`, from an
-  alphabet without look-alikes (no `0/O`, `1/I`): about 1.1 trillion combinations, easy to
-  read aloud. *Planned hardening:* rate-limit `/join` and let admins rotate the code.
-- **A circle always has an admin.** If the last admin leaves, the longest-standing member is
-  promoted. If the last member leaves, the circle is deleted.
-- **Data minimization.** Rosters show name, avatar, role and sharing status. Emails are
-  never exposed to other members.
-- **No N+1 queries.** "My circles" loads the memberships and their families with a single
-  join, then fetches all member counts in one grouped query.
-
-## Design notes (step 3)
-
-- **Consent is enforced on the server.** A point is shared only with circles where the member
-  has sharing on. Paused everywhere means it is discarded, not stored. A paused member's
-  last known location is hidden too, not just new points.
-- **One authorization rule for REST and WebSocket.** The STOMP interceptor checks `SUBSCRIBE`
-  with the same `FamilyAccessService.requireMember` that the REST endpoints use. Clients may only
-  `SEND` to `/app/**`, never straight to a `/topic`, so nobody can publish a fake location
-  for someone else.
-- **JWT in the STOMP CONNECT frame,** because browser and React Native WebSocket APIs can't set
-  headers on the handshake. Putting the token in the URL would leak it into access logs.
-- **Broadcast after commit** (`@TransactionalEventListener(AFTER_COMMIT)`), so subscribers never
-  see a point that was rolled back.
-- **Points belong to the user, not the circle.** Someone in two circles reports once, and each
-  circle where sharing is on gets it.
-- **Latest location without N+1:** one roster query plus one "latest per user" query, served by
-  the `(user_id, recorded_at)` index.
-- **Late uploads keep their real time.** A phone that was offline can upload points afterwards
-  with their original timestamps, so clients ignore a point older than the one they're showing.
-- **Scaling note.** The in-memory simple broker works for one API instance. To run several,
-  switch to a broker relay (RabbitMQ or ActiveMQ via `enableStompBrokerRelay`) so all
-  instances share topics.
-- **Known limitation.** A member who leaves a circle keeps an existing subscription until they
-  reconnect. *Planned:* close their sessions when they leave.
-
-## Design notes (step 4)
-
-- **Tokens in the keychain/keystore** (`expo-secure-store`), never in AsyncStorage. The access
-  token is refreshed shortly before it expires. If a burst of requests gets 401, they share
-  one refresh call, and a rejected refresh signs the user out.
-- **The auth gate uses `Stack.Protected`.** Screens for signed-in users can't be reached while
-  signed out, even through deep links. The splash screen stays up until the session is
-  restored, so the sign-in screen never flashes.
-- **Realtime that survives mobile networks.** `useLiveCircle` loads over REST, then subscribes
-  over STOMP. It reloads after every reconnect so no point is missed, ignores out-of-order
-  points, sends 10 s heartbeats, and disconnects while the app is in the background. A fresh
-  token is fetched before each reconnect.
-- **Honest data.** A *Live / Reconnecting* badge, "last seen" times, and an accuracy halo for
-  imprecise fixes keep people from trusting a position more than they should.
-- **Accessibility.** Labeled inputs, errors announced to screen readers, 48 dp touch targets,
-  markers and rows labeled with name and status, light and dark themes, and colors with
-  ≥ 4.5:1 contrast.
-- **Expo Go first.** Everything in this step runs in Expo Go. Background location (step 5)
-  needs a development build, which comes then.
-
-## Design notes (step 5)
-
-- **Consent before the prompt.** Nothing is tracked until the user has read a plain-language
-  screen: who sees it, pause, battery, 7-day retention. The choice is remembered per sign-in,
-  and signing out stops tracking and forgets it.
-- **Pause is per circle and total.** A paused member shows up as "paused" with no location at
-  all, not even their last one. The change is pushed live on `/topic/family/{id}/members`.
-  When the server reports sharing is paused in every circle, the phone stops the GPS entirely
-  instead of sending points that would be thrown away.
-- **Battery-aware.** High precision with 25 m / 15 s updates normally. Balanced precision with
-  100 m / 1 min at ≤ 20% or in Low Power Mode. Coarse with 300 m / 5 min at ≤ 10%. Full
-  precision whenever charging. A heartbeat (5–30 min) keeps "last seen" fresh while standing
-  still, and jitter and duplicate fixes are filtered before upload.
-- **Offline-tolerant, not hoarding.** Failed uploads wait in an in-memory queue (max 200,
-  under 6 days old) and go out oldest first with their real timestamps. The trail is never
-  written to disk.
-- **Never invisible.** Background tracking runs as an Android foreground service with a
-  permanent notification and shows the blue location pill on iOS.
-- **One code path.** The foreground watcher and the background task both go through the
-  same `reporter`, so throttling, battery handling and the offline queue behave the same in
-  both modes.
-
-## Design notes (step 6)
-
-- **Geofencing on the server, not the phone.** Every stored point is checked against the
-  places of the circles it was shared with. It costs no extra battery or permission, behaves
-  the same on iOS, Android and Expo Go, and can only use locations the member agreed to share
-  with that circle.
-- **No flapping.** You're inside within the radius, but only outside again past the radius
-  plus max(25 m, 20%). Fixes less precise than the place itself decide nothing. Late offline
-  uploads never rewind a newer state.
-- **No surprise announcements.** The first time someone is seen near a place sets a baseline
-  silently, so turning on sharing at home doesn't announce "arrived at Home". Pausing or
-  leaving a circle forgets presence, so resuming doesn't reveal where you went while paused.
-- **Push can't break location uploads.** Notifications go out after commit and off the request
-  thread, are sent in batches of 100, failures are only logged, and tokens Expo reports as
-  `DeviceNotRegistered` are deleted.
-- **Opt-in alerts, cleaned up on sign-out.** The push token is registered only when the user
-  asks, and is unregistered before the session is cleared, so a shared phone doesn't keep
-  getting someone else's alerts.
-
-## Design notes (step 7)
-
-- **SOS overrides a pause, on purpose and in the open.** Pausing stops routine tracking.
-  Holding SOS for two seconds is a deliberate, in-the-moment request to be found, so it goes
-  to every circle you're in, with your position. The button's accessibility hint says so.
-  Routine tracking stays paused.
-- **Hard to trigger by accident, easy on purpose.** Hold for 2 s with visual and haptic
-  feedback, and letting go cancels. A confirm dialog replaces hold for screen readers. An
-  SOS never waits more than 6 s for GPS: it falls back to the last known position, or goes
-  out without one ("location unknown, try calling").
-- **One alarm per SOS.** Pressing again while one is open updates its position instead of
-  re-alarming everyone. Push goes out on raise and resolve only, on a separate max-importance
-  Android channel, so people can mute arrivals and keep SOS loud.
-- **Retention is a feature.** Location points live for 7 days, SOS alerts for 30. The purge
-  runs hourly in 1,000-row transactions so it never holds long locks on the busiest table.
-  "Delete my location history" erases everything immediately and clears the marker live.
+## Choices that differ from a typical setup
+
+- **Push via Expo's push service instead of calling FCM directly.** It delivers through FCM on
+  Android and APNs on iOS, so one integration covers both, and the server holds no Google or
+  Apple credentials.
+- **Geofencing on the server instead of on the phone.** It costs no extra battery or
+  permission, behaves the same on iOS, Android and Expo Go, and only ever uses locations the
+  member chose to share with that circle.
+- **Presence instead of an enter/exit event log.** The server keeps "who is inside which place
+  now", which is all the alerts need. Arrivals are broadcast and pushed but not stored, because
+  a timestamped history of someone's whereabouts is exactly what this app avoids keeping.
+
+## Known limitations & next steps
+
+- **One API instance.** The in-memory STOMP broker and the in-process retention job assume a
+  single instance. Next: a RabbitMQ broker relay and ShedLock.
+- **Refresh tokens can't be revoked** before they expire. Next: server-side rotation with reuse detection.
+- **Brute-forcing invite codes.** `/families/join` isn't rate-limited yet, and admins can't rotate codes.
+- **Leaving a circle** doesn't close existing WebSocket subscriptions until the next reconnect.
