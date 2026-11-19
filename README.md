@@ -27,7 +27,7 @@ and everyone in the circle sees each other on a map.
 - [x] **Step 4:** Mobile app: auth, join, live map
 - [x] **Step 5:** Background location, battery, pause
 - [x] **Step 6:** Saved places, geofencing, push
-- [ ] Step 7: SOS + history cleanup
+- [x] **Step 7:** SOS + history cleanup
 - [ ] Step 8: Portfolio polish
 
 ## Repository layout
@@ -201,6 +201,7 @@ future or older than the 7-day retention window.
 | Subscribe | `/topic/family/{familyId}/locations` (members only) |
 | Subscribe (step 5) | `/topic/family/{familyId}/members`: a member paused or resumed sharing (their full member JSON) |
 | Subscribe (step 6) | `/topic/family/{familyId}/events`: `ARRIVED`, `LEFT`, `PLACE_ADDED`, `PLACE_REMOVED` |
+| Subscribe (step 7) | `/topic/family/{familyId}/sos`: an SOS was raised, moved, or resolved (`"active": false`) |
 | Publish (optional) | `SEND /app/locations` with the same JSON as the REST body |
 | Your errors | subscribe to `/user/queue/errors` |
 
@@ -247,6 +248,18 @@ An event on `/topic/family/{id}/events`:
 
 Arrivals and departures are also pushed through Expo's push service to every *other* member
 who turned notifications on. Set `PUSH_ENABLED=false` to keep them in-app only.
+
+## API (step 7): SOS and data retention
+
+| Method | Path | |
+|---|---|---|
+| POST | `/api/sos` | `{"lat?","lng?","accuracy?","battery?"}`. Alerts **every** circle you're in, even ones where sharing is paused. `201` new, `200` if it updated your open SOS. `400` if you're in no circle |
+| POST | `/api/sos/{id}/resolve` | The sender ("I'm OK") or anyone in an alerted circle ("handled"). Idempotent. Others get `404` |
+| GET | `/api/families/{id}/sos` | Open SOS alerts in the circle |
+| DELETE | `/api/me/locations` | Erase all your stored locations now. Returns `{"deleted": n}` and clears your marker live |
+
+Retention runs hourly: location points older than `RETENTION_LOCATIONS` (default `7d`) and SOS
+alerts older than `RETENTION_SOS` (`30d`) are deleted in batches of 1,000.
 
 ## Mobile app (step 4)
 
@@ -314,6 +327,17 @@ notification, and iOS shows the blue location pill, so tracking is never invisib
    Android can't receive push. Without them the app says so, and banners still work while
    it's open.
 
+### SOS and your history (step 7)
+
+1. **Hold the red SOS button** (bottom right) for 2 seconds. The ring fills and the phone
+   buzzes, and every circle you're in is alerted with your position, even circles you've
+   paused. Screen-reader users get a "Send SOS" action with a confirmation instead.
+2. Everyone else sees a red banner, "Leo needs help · sent just now · 23% battery", and a
+   red pin. *Show on map* jumps to it and *Mark handled* closes it for everyone. The sender
+   sees *I'm OK*.
+3. **Circle menu → Delete my location history** erases everything stored about where you've
+   been, and your marker disappears from everyone's map right away.
+
 ### Checks
 
 ```bash
@@ -338,6 +362,7 @@ cd backend
 - **Step 5:** `FamilyServiceTest` covers pause, resume, setting the same value again (no broadcast) and outsiders. `LocationRealtimeIntegrationTest` checks that pause and resume reach the circle live over STOMP, and that the endpoint rejects outsiders (404), missing tokens (401) and missing `enabled` (400).
 - **Mobile (step 5):** `policy.test.ts` (power modes, throttling, distance), `outbox.test.ts` (offline queue) and roster-update tests in `members.test.ts`.
 - **Step 6:** `GeofenceTest` (hysteresis, accuracy gate, distance), `GeofenceServiceTest` (silent first sighting, arrive, leave, no rewinding on late uploads), `PlaceServiceTest` (permissions, cap), `PushNotifierTest` (everyone but the mover, dead tokens dropped, failures swallowed) and `PlacesIntegrationTest` (real server: Leo walks in and out of Home, Mom gets live events and a push via a mocked Expo client, and nothing leaks out of a pause).
+- **Step 7:** `SosServiceTest` (all circles, no-location SOS, re-press updates, outsiders, idempotent resolve), `RetentionJobIntegrationTest` (real schema, several batches, only expired rows go), extra `PushNotifierTest` cases (high-priority SOS channel) and `SosIntegrationTest` (an SOS reaches a paused member's circle live and as push, gets updated and handled, and deleting history clears the marker live).
 - **Integration:** `AuthControllerIntegrationTest` and `FamilyControllerIntegrationTest` (two or three real users per test) run the full Spring context, security chain, and real Flyway migrations against H2 in MySQL mode.
 
 ## Design notes (step 1)
@@ -455,3 +480,20 @@ cd backend
 - **Opt-in alerts, cleaned up on sign-out.** The push token is registered only when the user
   asks, and is unregistered before the session is cleared, so a shared phone doesn't keep
   getting someone else's alerts.
+
+## Design notes (step 7)
+
+- **SOS overrides a pause, on purpose and in the open.** Pausing stops routine tracking.
+  Holding SOS for two seconds is a deliberate, in-the-moment request to be found, so it goes
+  to every circle you're in, with your position. The button's accessibility hint says so.
+  Routine tracking stays paused.
+- **Hard to trigger by accident, easy on purpose.** Hold for 2 s with visual and haptic
+  feedback, and letting go cancels. A confirm dialog replaces hold for screen readers. An
+  SOS never waits more than 6 s for GPS: it falls back to the last known position, or goes
+  out without one ("location unknown, try calling").
+- **One alarm per SOS.** Pressing again while one is open updates its position instead of
+  re-alarming everyone. Push goes out on raise and resolve only, on a separate max-importance
+  Android channel, so people can mute arrivals and keep SOS loud.
+- **Retention is a feature.** Location points live for 7 days, SOS alerts for 30. The purge
+  runs hourly in 1,000-row transactions so it never holds long locks on the busiest table.
+  "Delete my location history" erases everything immediately and clears the marker live.
