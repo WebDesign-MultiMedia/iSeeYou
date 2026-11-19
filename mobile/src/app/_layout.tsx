@@ -3,6 +3,9 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
+import { LocationSharingProvider } from '@/location/LocationSharingProvider';
+// Defines the background location task at startup, before any screen (required by TaskManager).
+import '@/location/task';
 import { useTheme } from '@/theme';
 
 // Keep the splash screen up until we know whether the user is signed in, so there's no
@@ -13,7 +16,9 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <RootNavigator />
+        <LocationSharingProvider>
+          <RootNavigator />
+        </LocationSharingProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

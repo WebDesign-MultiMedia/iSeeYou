@@ -28,6 +28,23 @@ export interface LocationPoint {
   recordedAt: string;
 }
 
+/** Body of POST /api/locations. */
+export interface LocationReport {
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  battery: number | null;
+  /** ISO-8601; lets offline points upload later with their real time */
+  recordedAt: string;
+}
+
+/** shared=false: sharing is paused in every circle, so the server dropped the point. */
+export interface RecordLocationResponse {
+  shared: boolean;
+  sharedWith: string[];
+  location: LocationPoint | null;
+}
+
 export interface Member {
   userId: string;
   name: string;

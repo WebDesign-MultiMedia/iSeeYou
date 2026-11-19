@@ -1,7 +1,16 @@
 import { API_URL } from '@/config';
 import { session, type Tokens } from '@/auth/session';
 import { isExpiringSoon } from '@/auth/jwt';
-import type { AuthResponse, FamilyDetail, FamilySummary, Problem, User } from './types';
+import type {
+  AuthResponse,
+  FamilyDetail,
+  FamilySummary,
+  LocationReport,
+  Member,
+  Problem,
+  RecordLocationResponse,
+  User,
+} from './types';
 
 /** An HTTP error from the API, carrying the problem+json body when there is one. */
 export class ApiError extends Error {
@@ -137,4 +146,11 @@ export const api = {
 
   leaveCircle: (familyId: string) =>
     request<void>(`/api/families/${familyId}/members/me`, { method: 'DELETE' }),
+
+  /** Pause (false) or resume (true) sharing my location with one circle. */
+  setSharing: (familyId: string, enabled: boolean) =>
+    request<Member>(`/api/families/${familyId}/members/me/sharing`, { method: 'PUT', body: { enabled } }),
+
+  reportLocation: (point: LocationReport) =>
+    request<RecordLocationResponse>('/api/locations', { method: 'POST', body: point }),
 };

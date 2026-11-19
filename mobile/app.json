@@ -26,7 +26,17 @@
     "plugins": [
       "expo-router",
       "expo-status-bar",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "FamilyMap shows your location to the family circles you joined. You can pause any time.",
+          "locationAlwaysAndWhenInUsePermission": "Lets your family circles see where you are even when FamilyMap is closed. You can pause any time.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ]
     ],
     "scheme": "familymap",
     "experiments": {
