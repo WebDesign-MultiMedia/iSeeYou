@@ -40,13 +40,15 @@ public class LocationService {
     private final LocationRepository locations;
     private final FamilyMemberRepository members;
     private final ApplicationEventPublisher events;
+    private final GeofenceService geofences;
     private final Clock clock;
 
     public LocationService(LocationRepository locations, FamilyMemberRepository members,
-                           ApplicationEventPublisher events, Clock clock) {
+                           ApplicationEventPublisher events, GeofenceService geofences, Clock clock) {
         this.locations = locations;
         this.members = members;
         this.events = events;
+        this.geofences = geofences;
         this.clock = clock;
     }
 
@@ -64,6 +66,8 @@ public class LocationService {
 
         Location saved = locations.save(new Location(userId, request.lat(), request.lng(),
                 request.accuracy(), request.battery(), recordedAt));
+
+        geofences.evaluate(saved, sharingWith); // only circles with sharing on: consent applies here too
 
         LocationResponse location = LocationResponse.from(saved);
         events.publishEvent(new LocationRecordedEvent(location, sharingWith));

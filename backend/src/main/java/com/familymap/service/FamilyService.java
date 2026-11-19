@@ -11,6 +11,7 @@ import com.familymap.dto.MemberResponse;
 import com.familymap.exception.ResourceNotFoundException;
 import com.familymap.repository.FamilyMemberRepository;
 import com.familymap.repository.FamilyRepository;
+import com.familymap.repository.PlacePresenceRepository;
 import com.familymap.repository.UserRepository;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -40,10 +41,11 @@ public class FamilyService {
     private final InviteCodeGenerator codes;
     private final LocationService locations;
     private final ApplicationEventPublisher events;
+    private final PlacePresenceRepository presence;
 
     public FamilyService(FamilyRepository families, FamilyMemberRepository members, UserRepository users,
                          FamilyAccessService access, InviteCodeGenerator codes, LocationService locations,
-                         ApplicationEventPublisher events) {
+                         ApplicationEventPublisher events, PlacePresenceRepository presence) {
         this.families = families;
         this.members = members;
         this.users = users;
@@ -51,6 +53,7 @@ public class FamilyService {
         this.codes = codes;
         this.locations = locations;
         this.events = events;
+        this.presence = presence;
     }
 
     /** Creates a circle; the caller becomes its first ADMIN. */
@@ -125,6 +128,11 @@ public class FamilyService {
         FamilyMember me = access.requireMember(familyId, userId);
         boolean changed = me.isSharingEnabled() != enabled;
         me.setSharingEnabled(enabled);
+        if (!enabled) {
+            // While paused nobody may learn where they are, so the first point after resuming
+            // only sets a new baseline instead of announcing "left Home".
+            presence.deleteForUserInFamily(userId, familyId);
+        }
 
         LocationResponse latest = enabled ? locations.latestFor(List.of(userId)).get(userId) : null;
         MemberResponse member = MemberResponse.from(me, latest);
@@ -144,6 +152,7 @@ public class FamilyService {
     @Transactional
     public void leave(UUID familyId, UUID userId) {
         FamilyMember me = access.requireMember(familyId, userId);
+        presence.deleteForUserInFamily(userId, familyId);
 
         if (members.countByFamilyId(familyId) == 1) {
             members.delete(me);

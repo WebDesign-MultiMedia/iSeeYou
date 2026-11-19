@@ -32,6 +32,10 @@ familymap:
     secret: ${JWT_SECRET}
     access-token-ttl: ${JWT_ACCESS_TTL:15m}
     refresh-token-ttl: ${JWT_REFRESH_TTL:7d}
+  push:
+    # Arrival/departure notifications via Expo's push service. Off = in-app live events only.
+    enabled: ${PUSH_ENABLED:true}
+    access-token: ${EXPO_ACCESS_TOKEN:}
   cors:
     # Comma-separated origins. "*" is fine for local dev; lock down in production.
     allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
