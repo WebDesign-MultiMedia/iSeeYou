@@ -1,6 +1,6 @@
 package com.familymap.realtime;
 
-import com.familymap.service.MemberSharingChangedEvent;
+import com.familymap.service.MemberUpdatedEvent;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -27,7 +27,7 @@ public class MemberBroadcaster {
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void onSharingChanged(MemberSharingChangedEvent event) {
+    public void onMemberUpdated(MemberUpdatedEvent event) {
         messaging.convertAndSend(topicFor(event.familyId()), event.member());
     }
 }

@@ -196,7 +196,7 @@ class FamilyServiceTest {
         assertThat(res.sharingEnabled()).isFalse();
         assertThat(res.lastLocation()).isNull();
         verify(locations, never()).latestFor(any());
-        ArgumentCaptor<MemberSharingChangedEvent> event = ArgumentCaptor.forClass(MemberSharingChangedEvent.class);
+        ArgumentCaptor<MemberUpdatedEvent> event = ArgumentCaptor.forClass(MemberUpdatedEvent.class);
         verify(events).publishEvent(event.capture());
         assertThat(event.getValue().familyId()).isEqualTo(family.getId());
         assertThat(event.getValue().member()).isEqualTo(res);
@@ -216,7 +216,7 @@ class FamilyServiceTest {
 
         assertThat(res.sharingEnabled()).isTrue();
         assertThat(res.lastLocation()).isEqualTo(last);
-        verify(events).publishEvent(any(MemberSharingChangedEvent.class));
+        verify(events).publishEvent(any(MemberUpdatedEvent.class));
     }
 
     @Test

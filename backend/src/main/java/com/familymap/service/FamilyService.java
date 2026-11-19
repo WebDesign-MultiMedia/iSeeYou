@@ -137,7 +137,7 @@ public class FamilyService {
         LocationResponse latest = enabled ? locations.latestFor(List.of(userId)).get(userId) : null;
         MemberResponse member = MemberResponse.from(me, latest);
         if (changed) {
-            events.publishEvent(new MemberSharingChangedEvent(familyId, member));
+            events.publishEvent(new MemberUpdatedEvent(familyId, member));
         }
         return member;
     }
