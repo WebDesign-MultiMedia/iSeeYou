@@ -13,7 +13,9 @@ import { CircleMenu } from '@/features/map/CircleMenu';
 import { ConnectionBadge } from '@/features/map/ConnectionBadge';
 import { MemberMarker } from '@/features/map/MemberMarker';
 import { MemberRow } from '@/features/map/MemberRow';
+import { SharingBar } from '@/features/map/SharingBar';
 import { useNow } from '@/features/map/useNow';
+import { useLocationSharing } from '@/location/LocationSharingProvider';
 import { useLiveCircle } from '@/realtime/useLiveCircle';
 import { font, radius, spacing, useTheme } from '@/theme';
 
@@ -35,6 +37,7 @@ export default function MapHome() {
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const now = useNow();
+  const sharing = useLocationSharing();
 
   const [circles, setCircles] = useState<FamilySummary[] | null>(null);
   const [circlesError, setCirclesError] = useState<string | null>(null);
@@ -67,13 +70,14 @@ export default function MapHome() {
     }, [loadCircles]),
   );
 
-  const { circle, error: circleError, connection, reload } = useLiveCircle(selectedId);
+  const { circle, error: circleError, connection, reload, applyMember } = useLiveCircle(selectedId);
   const members = useMemo(() => {
     const list = circle?.members ?? [];
     // You first, then everyone else in the order they joined.
     return [...list].sort((a, b) => Number(b.userId === user?.id) - Number(a.userId === user?.id));
   }, [circle, user?.id]);
   const located = useMemo(() => members.filter(isLocated), [members]);
+  const me = members.find((m) => m.userId === user?.id) ?? null;
 
   // ---- map camera ----
   const mapRef = useRef<MapView>(null);
@@ -178,6 +182,9 @@ export default function MapHome() {
         style={StyleSheet.absoluteFill}
         // Keeps the map's logo/legal text and centering clear of the roster panel.
         mapPadding={{ top: insets.top, right: 0, bottom: panelHeight, left: 0 }}
+        // The OS blue dot: instant feedback, before our own point has made the round trip.
+        showsUserLocation={sharing.permission === 'granted'}
+        showsMyLocationButton={sharing.permission === 'granted'}
         showsCompass={false}
         toolbarEnabled={false}
         accessibilityLabel="Family map"
@@ -219,6 +226,16 @@ export default function MapHome() {
           </View>
           <Button title="Invite" variant="secondary" onPress={shareInvite} disabled={!circle} />
         </View>
+
+        {selectedId ? (
+          <SharingBar
+            familyId={selectedId}
+            circleName={currentName}
+            me={me}
+            now={now}
+            onMemberChanged={applyMember}
+          />
+        ) : null}
 
         {circleError && !circle ? (
           <View style={styles.panelMessage}>

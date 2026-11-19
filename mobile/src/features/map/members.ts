@@ -28,6 +28,19 @@ export function applyLocation(members: Member[], point: LocationPoint): Member[]
   return next;
 }
 
+/**
+ * Applies a roster update (someone paused or resumed sharing). The server sends the member's
+ * full current state, so it simply replaces ours: a paused member arrives with no location,
+ * which removes their marker. Unknown members are ignored; a refetch picks them up.
+ */
+export function applyMemberUpdate(members: Member[], updated: Member): Member[] {
+  const index = members.findIndex((m) => m.userId === updated.userId);
+  if (index === -1) return members;
+  const next = members.slice();
+  next[index] = updated;
+  return next;
+}
+
 /** "Just now", "5 min ago", "3 h ago", "Yesterday", or a short date. */
 export function lastSeenLabel(recordedAt: string, now: number = Date.now()): string {
   const diffMs = Math.max(0, now - Date.parse(recordedAt));

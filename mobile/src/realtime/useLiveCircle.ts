@@ -2,9 +2,9 @@ import { Client, type StompSubscription } from '@stomp/stompjs';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { api, freshAccessToken } from '@/api/client';
-import type { FamilyDetail, LocationPoint } from '@/api/types';
+import type { FamilyDetail, LocationPoint, Member } from '@/api/types';
 import { WS_URL } from '@/config';
-import { applyLocation } from '@/features/map/members';
+import { applyLocation, applyMemberUpdate } from '@/features/map/members';
 
 export type Connection = 'connecting' | 'live' | 'reconnecting' | 'offline';
 
@@ -14,14 +14,17 @@ interface LiveCircle {
   error: Error | null;
   connection: Connection;
   reload: () => Promise<void>;
+  /** Merge a member we got from our own request (e.g. after pausing) without waiting for the echo. */
+  applyMember: (member: Member) => void;
 }
 
 /**
  * A circle's roster with locations kept up to date in realtime.
  *
  * 1. Loads the circle over REST (members + latest points).
- * 2. Opens a STOMP connection and subscribes to `/topic/family/{id}/locations`; each point is
- *    merged into the roster with {@link applyLocation}.
+ * 2. Opens a STOMP connection and subscribes to `/topic/family/{id}/locations` (each point is
+ *    merged with {@link applyLocation}) and `/topic/family/{id}/members` (pause/resume, merged
+ *    with {@link applyMemberUpdate}).
  * 3. On every (re)connect it reloads over REST, so points sent while the socket was down
  *    aren't lost.
  * 4. Disconnects while the app is in the background, which saves battery and data, and
@@ -33,7 +36,19 @@ export function useLiveCircle(familyId: string | null): LiveCircle {
   const [error, setError] = useState<Error | null>(null);
   const [connection, setConnection] = useState<Connection>('connecting');
   const familyRef = useRef(familyId);
-  familyRef.current = familyId;
+  useEffect(() => {
+    familyRef.current = familyId;
+  }, [familyId]);
+
+  // Switching circles: clear the old roster while rendering, not in an effect, so the
+  // previous circle's members never flash on screen (React's "adjust state on prop change").
+  const [shownFamily, setShownFamily] = useState(familyId);
+  if (shownFamily !== familyId) {
+    setShownFamily(familyId);
+    setCircle(null);
+    setLoading(true);
+    setConnection('connecting');
+  }
 
   const reload = useCallback(async () => {
     const id = familyRef.current;
@@ -51,14 +66,19 @@ export function useLiveCircle(familyId: string | null): LiveCircle {
     }
   }, []);
 
+  const mergeMember = useCallback((member: Member) => {
+    setCircle((c) => {
+      if (!c) return c;
+      const members = applyMemberUpdate(c.members, member);
+      return members === c.members ? c : { ...c, members };
+    });
+  }, []);
+
   useEffect(() => {
     if (!familyId) return;
-    setCircle(null);
-    setLoading(true);
-    setConnection('connecting');
     void reload();
 
-    let subscription: StompSubscription | undefined;
+    let subscriptions: StompSubscription[] = [];
     const client = new Client({
       brokerURL: WS_URL,
       reconnectDelay: 3_000,
@@ -79,14 +99,19 @@ export function useLiveCircle(familyId: string | null): LiveCircle {
       },
       onConnect: () => {
         setConnection('live');
-        subscription = client.subscribe(`/topic/family/${familyId}/locations`, (message) => {
-          const point = JSON.parse(message.body) as LocationPoint;
-          setCircle((c) => {
-            if (!c) return c;
-            const members = applyLocation(c.members, point);
-            return members === c.members ? c : { ...c, members };
-          });
-        });
+        subscriptions = [
+          client.subscribe(`/topic/family/${familyId}/locations`, (message) => {
+            const point = JSON.parse(message.body) as LocationPoint;
+            setCircle((c) => {
+              if (!c) return c;
+              const members = applyLocation(c.members, point);
+              return members === c.members ? c : { ...c, members };
+            });
+          }),
+          client.subscribe(`/topic/family/${familyId}/members`, (message) => {
+            mergeMember(JSON.parse(message.body) as Member);
+          }),
+        ];
         void reload(); // catch up on anything missed while disconnected
       },
       onWebSocketClose: () => setConnection((s) => (s === 'offline' ? s : 'reconnecting')),
@@ -104,17 +129,17 @@ export function useLiveCircle(familyId: string | null): LiveCircle {
         setConnection('connecting');
         client.activate();
       } else if (state === 'background' && client.active) {
-        subscription?.unsubscribe();
+        subscriptions.forEach((sub) => sub.unsubscribe());
         void client.deactivate();
       }
     });
 
     return () => {
       appState.remove();
-      subscription?.unsubscribe();
+      subscriptions.forEach((sub) => sub.unsubscribe());
       void client.deactivate();
     };
-  }, [familyId, reload]);
+  }, [familyId, reload, mergeMember]);
 
-  return { circle, loading, error, connection, reload };
+  return { circle, loading, error, connection, reload, applyMember: mergeMember };
 }
