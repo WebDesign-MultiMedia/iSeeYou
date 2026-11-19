@@ -3,11 +3,12 @@
 # ---- Build stage: compile and package the fat jar ----
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
-# Copy the POM first so dependency downloads are cached between code changes.
+# Copy the POM first so the dependency layer is reused between code changes.
+# (No BuildKit cache mounts: Railway rejects ones without its own id prefix.)
 COPY pom.xml .
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
+RUN mvn -B -q dependency:go-offline
 COPY src ./src
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q package -DskipTests
+RUN mvn -B -q package -DskipTests
 
 # ---- Runtime stage: slim JRE, non-root user ----
 FROM eclipse-temurin:21-jre
