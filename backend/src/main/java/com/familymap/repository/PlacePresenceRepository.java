@@ -26,4 +26,8 @@ public interface PlacePresenceRepository extends JpaRepository<PlacePresence, Pl
             where p.id.userId = :userId
               and p.id.placeId in (select pl.id from Place pl where pl.familyId = :familyId)""")
     void deleteForUserInFamily(@Param("userId") UUID userId, @Param("familyId") UUID familyId);
+
+    @Modifying
+    @Query("delete from PlacePresence p where p.id.userId = :userId")
+    void deleteAllForUser(@Param("userId") UUID userId);
 }
