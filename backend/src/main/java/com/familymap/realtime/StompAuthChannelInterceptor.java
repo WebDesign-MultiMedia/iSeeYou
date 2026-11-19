@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
  *       header. The browser and React Native WebSocket APIs can't set HTTP headers on the
  *       handshake, so the token travels in the CONNECT frame.</li>
  *   <li><b>SUBSCRIBE</b> is allowed only to {@code /topic/family/{id}/locations},
- *       {@code .../members} or {@code .../events} for a circle
+ *       {@code .../members}, {@code .../events} or {@code .../sos} for a circle
  *       the user belongs to (checked by {@link FamilyAccessService}, the same rule as REST), or
  *       to the user's own {@code /user/queue/errors}.</li>
  *   <li><b>SEND</b> is allowed only to application destinations ({@code /app/...}). Clients can
@@ -41,7 +41,7 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private static final String BEARER_PREFIX = "Bearer ";
     private static final Pattern FAMILY_TOPIC =
-            Pattern.compile("^/topic/family/([0-9a-fA-F-]{36})/(locations|members|events)$");
+            Pattern.compile("^/topic/family/([0-9a-fA-F-]{36})/(locations|members|events|sos)$");
     static final String ERRORS_QUEUE = "/user/queue/errors";
 
     private final JwtService jwtService;
