@@ -1,6 +1,5 @@
 package com.familymap.realtime;
 
-import com.familymap.repository.FamilyMemberRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -17,7 +16,6 @@ import org.springframework.messaging.simp.stomp.StompHeaders;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
@@ -45,8 +43,6 @@ class LocationRealtimeIntegrationTest {
 
     @LocalServerPort int port;
     @Autowired ObjectMapper json;
-    @Autowired FamilyMemberRepository memberRepository;
-    @Autowired TransactionTemplate tx;
 
     private RestClient http;
     private WebSocketStompClient stompClient;
@@ -152,7 +148,7 @@ class LocationRealtimeIntegrationTest {
         Circle c = momAndLeoCircle();
         post("/api/locations", c.leoToken, """
                 {"lat":10,"lng":10}""");
-        setSharing(c.familyId, UUID.fromString(c.leoId), false);
+        assertThat(setSharing(c.familyId, c.leoToken, false).status).isEqualTo(200);
 
         var res = post("/api/locations", c.leoToken, """
                 {"lat":20,"lng":20}""");
@@ -163,6 +159,43 @@ class LocationRealtimeIntegrationTest {
         assertThat(leo.get("sharingEnabled").asBoolean()).isFalse();
         assertThat(leo.get("lastLocation").isNull())
                 .as("not even the last point from before the pause is shown").isTrue();
+    }
+
+    @Test
+    void pauseAndResumeArePushedLiveToTheCircle() throws Exception {
+        Circle c = momAndLeoCircle();
+        post("/api/locations", c.leoToken, """
+                {"lat":10,"lng":10,"battery":80}""");
+        Client mom = connect(c.momToken);
+        BlockingQueue<JsonNode> momRoster = mom.subscribe(MemberBroadcaster.topicFor(c.familyId));
+
+        Response paused = setSharing(c.familyId, c.leoToken, false);
+        assertThat(paused.body.get("sharingEnabled").asBoolean()).isFalse();
+        JsonNode pushed = momRoster.poll(TIMEOUT_S, TimeUnit.SECONDS);
+        assertThat(pushed).as("Mom sees Leo pause live").isNotNull();
+        assertThat(pushed.get("userId").asText()).isEqualTo(c.leoId);
+        assertThat(pushed.get("sharingEnabled").asBoolean()).isFalse();
+        assertThat(pushed.get("lastLocation").isNull()).isTrue();
+
+        // Pausing twice is harmless and doesn't spam the circle.
+        assertThat(setSharing(c.familyId, c.leoToken, false).status).isEqualTo(200);
+        assertThat(momRoster.poll(1, TimeUnit.SECONDS)).isNull();
+
+        setSharing(c.familyId, c.leoToken, true);
+        JsonNode resumed = momRoster.poll(TIMEOUT_S, TimeUnit.SECONDS);
+        assertThat(resumed).isNotNull();
+        assertThat(resumed.get("sharingEnabled").asBoolean()).isTrue();
+        assertThat(resumed.get("lastLocation").get("lat").asDouble()).isEqualTo(10);
+    }
+
+    @Test
+    void sharingEndpointRules() {
+        Circle c = momAndLeoCircle();
+        String eve = register("Eve");
+        assertThat(setSharing(c.familyId, eve, false).status).as("outsider").isEqualTo(404);
+        assertThat(setSharing(c.familyId, null, false).status).isEqualTo(401);
+        assertThat(put("/api/families/" + c.familyId + "/members/me/sharing", c.leoToken, "{}").status)
+                .as("enabled is required").isEqualTo(400);
     }
 
     @Test
@@ -199,10 +232,9 @@ class LocationRealtimeIntegrationTest {
                 .formatted(name, name.toLowerCase(), UUID.randomUUID())).body.get("accessToken").asText();
     }
 
-    private void setSharing(UUID familyId, UUID userId, boolean enabled) {
-        // There is no pause endpoint until step 5, so flip the flag directly.
-        tx.executeWithoutResult(s -> memberRepository.findByFamilyIdAndUserId(familyId, userId)
-                .orElseThrow().setSharingEnabled(enabled));
+    private Response setSharing(UUID familyId, String token, boolean enabled) {
+        return put("/api/families/" + familyId + "/members/me/sharing", token, """
+                {"enabled":%s}""".formatted(enabled));
     }
 
     private static JsonNode memberNamed(JsonNode circle, String name) {
@@ -216,6 +248,13 @@ class LocationRealtimeIntegrationTest {
 
     private Response post(String path, String token, String body) {
         return http.post().uri(path).contentType(MediaType.APPLICATION_JSON)
+                .headers(h -> { if (token != null) h.setBearerAuth(token); })
+                .body(body)
+                .exchange((req, res) -> new Response(res.getStatusCode().value(), readJson(res.getBody().readAllBytes())));
+    }
+
+    private Response put(String path, String token, String body) {
+        return http.put().uri(path).contentType(MediaType.APPLICATION_JSON)
                 .headers(h -> { if (token != null) h.setBearerAuth(token); })
                 .body(body)
                 .exchange((req, res) -> new Response(res.getStatusCode().value(), readJson(res.getBody().readAllBytes())));

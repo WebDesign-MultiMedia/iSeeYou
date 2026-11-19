@@ -5,6 +5,8 @@ import com.familymap.domain.FamilyMember;
 import com.familymap.domain.FamilyRole;
 import com.familymap.domain.User;
 import com.familymap.dto.FamilyResponse;
+import com.familymap.dto.LocationResponse;
+import com.familymap.dto.MemberResponse;
 import com.familymap.exception.ResourceNotFoundException;
 import com.familymap.repository.FamilyMemberRepository;
 import com.familymap.repository.FamilyRepository;
@@ -12,7 +14,11 @@ import com.familymap.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.ApplicationEventPublisher;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -31,6 +37,8 @@ class FamilyServiceTest {
     private FamilyMemberRepository members;
     private UserRepository users;
     private InviteCodeGenerator codes;
+    private LocationService locations;
+    private ApplicationEventPublisher events;
     private FamilyService service;
 
     private final User ana = new User("Ana", "ana@example.com", "hash");
@@ -42,12 +50,14 @@ class FamilyServiceTest {
         members = mock(FamilyMemberRepository.class);
         users = mock(UserRepository.class);
         codes = mock(InviteCodeGenerator.class);
+        locations = mock(LocationService.class);
+        events = mock(ApplicationEventPublisher.class);
         when(families.save(any(Family.class))).thenAnswer(inv -> inv.getArgument(0));
         when(members.save(any(FamilyMember.class))).thenAnswer(inv -> inv.getArgument(0));
         when(users.findById(ana.getId())).thenReturn(Optional.of(ana));
         when(users.findById(ben.getId())).thenReturn(Optional.of(ben));
         service = new FamilyService(families, members, users, new FamilyAccessService(members), codes,
-                mock(LocationService.class));
+                locations, events);
     }
 
     @Test
@@ -167,5 +177,62 @@ class FamilyServiceTest {
 
         verify(members).delete(anaAdmin);
         verify(families).delete(family);
+    }
+
+    // ---------------------------------------------------------------- pause / resume sharing
+
+    @Test
+    void pausingHidesLocationAndTellsTheCircle() {
+        Family family = new Family("Smiths", "K7QM-3XPA", ana.getId());
+        FamilyMember benMember = new FamilyMember(family, ben, FamilyRole.MEMBER);
+        when(members.findByFamilyIdAndUserId(family.getId(), ben.getId())).thenReturn(Optional.of(benMember));
+
+        MemberResponse res = service.setSharing(family.getId(), ben.getId(), false);
+
+        assertThat(benMember.isSharingEnabled()).isFalse();
+        assertThat(res.sharingEnabled()).isFalse();
+        assertThat(res.lastLocation()).isNull();
+        verify(locations, never()).latestFor(any());
+        ArgumentCaptor<MemberSharingChangedEvent> event = ArgumentCaptor.forClass(MemberSharingChangedEvent.class);
+        verify(events).publishEvent(event.capture());
+        assertThat(event.getValue().familyId()).isEqualTo(family.getId());
+        assertThat(event.getValue().member()).isEqualTo(res);
+    }
+
+    @Test
+    void resumingShowsLatestPointAgain() {
+        Family family = new Family("Smiths", "K7QM-3XPA", ana.getId());
+        FamilyMember benMember = new FamilyMember(family, ben, FamilyRole.MEMBER);
+        benMember.setSharingEnabled(false);
+        when(members.findByFamilyIdAndUserId(family.getId(), ben.getId())).thenReturn(Optional.of(benMember));
+        LocationResponse last = new LocationResponse(ben.getId(), 1, 2, null, 50, Instant.now());
+        when(locations.latestFor(List.of(ben.getId()))).thenReturn(Map.of(ben.getId(), last));
+
+        MemberResponse res = service.setSharing(family.getId(), ben.getId(), true);
+
+        assertThat(res.sharingEnabled()).isTrue();
+        assertThat(res.lastLocation()).isEqualTo(last);
+        verify(events).publishEvent(any(MemberSharingChangedEvent.class));
+    }
+
+    @Test
+    void settingSameValueIsANoOpBroadcast() {
+        Family family = new Family("Smiths", "K7QM-3XPA", ana.getId());
+        FamilyMember benMember = new FamilyMember(family, ben, FamilyRole.MEMBER);
+        when(members.findByFamilyIdAndUserId(family.getId(), ben.getId())).thenReturn(Optional.of(benMember));
+
+        service.setSharing(family.getId(), ben.getId(), true);
+
+        verify(events, never()).publishEvent(any());
+    }
+
+    @Test
+    void outsiderCannotChangeSharing() {
+        UUID familyId = UUID.randomUUID();
+        when(members.findByFamilyIdAndUserId(familyId, ben.getId())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.setSharing(familyId, ben.getId(), false))
+                .isInstanceOf(ResourceNotFoundException.class);
+        verify(events, never()).publishEvent(any());
     }
 }
