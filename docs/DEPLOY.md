@@ -85,8 +85,8 @@ npx eas-cli@latest build --profile development --platform android   # or ios
 npx eas-cli@latest device:create
 ```
 
-Install it from the link EAS prints, then run `npx expo start` and open the project from the
-FamilyMap dev app instead of Expo Go. The API address is still taken from the dev server, as before.
+Install it from the link EAS prints, then run `npx expo start` (without `--go`, it now
+targets the development build) and open the project from the FamilyMap dev app. The API address is still taken from the dev server, as before.
 
 ### Preview / production builds
 

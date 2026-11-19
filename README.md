@@ -130,7 +130,7 @@ curl http://localhost:8080/actuator/health        # {"status":"UP"}
 # 3. App
 cd mobile
 npm install
-npx expo start                                    # scan the QR code with your phone
+npx expo start --go                               # scan the QR code with your phone (Expo Go)
 ```
 
 The app finds the API on the machine running `expo start`, so there's nothing to configure on
