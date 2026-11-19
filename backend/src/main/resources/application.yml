@@ -4,7 +4,9 @@ spring:
   application:
     name: familymap-api
   datasource:
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:familymap}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    # DB_URL overrides the whole JDBC URL, e.g. for a managed MySQL that requires TLS:
+    #   jdbc:mysql://host:3306/familymap?sslMode=REQUIRED&serverTimezone=UTC
+    url: ${DB_URL:jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:familymap}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
     username: ${DB_USER:familymap}
     password: ${DB_PASSWORD:familymap}
   jpa:
