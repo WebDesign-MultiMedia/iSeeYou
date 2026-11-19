@@ -38,6 +38,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return problem(HttpStatus.NOT_FOUND, "Not found", ex.getMessage());
     }
 
+    @ExceptionHandler(InvalidRequestException.class)
+    ProblemDetail handleInvalidRequest(InvalidRequestException ex) {
+        return problem(HttpStatus.BAD_REQUEST, "Invalid request", ex.getMessage());
+    }
+
     /** Backstop for races, e.g. two concurrent registrations with the same email. */
     @ExceptionHandler(DataIntegrityViolationException.class)
     ProblemDetail handleConstraintViolation(DataIntegrityViolationException ex) {
