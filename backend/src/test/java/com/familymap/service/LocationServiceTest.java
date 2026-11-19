@@ -52,7 +52,8 @@ class LocationServiceTest {
         members = mock(FamilyMemberRepository.class);
         events = mock(ApplicationEventPublisher.class);
         when(locations.save(any(Location.class))).thenAnswer(inv -> inv.getArgument(0));
-        service = new LocationService(locations, members, events, Clock.fixed(NOW, ZoneOffset.UTC));
+        service = new LocationService(locations, members, events, mock(GeofenceService.class),
+                Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static LocationRequest at(Instant recordedAt) {

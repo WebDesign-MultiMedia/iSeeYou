@@ -10,6 +10,7 @@ import com.familymap.dto.MemberResponse;
 import com.familymap.exception.ResourceNotFoundException;
 import com.familymap.repository.FamilyMemberRepository;
 import com.familymap.repository.FamilyRepository;
+import com.familymap.repository.PlacePresenceRepository;
 import com.familymap.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,7 @@ class FamilyServiceTest {
     private InviteCodeGenerator codes;
     private LocationService locations;
     private ApplicationEventPublisher events;
+    private PlacePresenceRepository presence;
     private FamilyService service;
 
     private final User ana = new User("Ana", "ana@example.com", "hash");
@@ -52,12 +54,13 @@ class FamilyServiceTest {
         codes = mock(InviteCodeGenerator.class);
         locations = mock(LocationService.class);
         events = mock(ApplicationEventPublisher.class);
+        presence = mock(PlacePresenceRepository.class);
         when(families.save(any(Family.class))).thenAnswer(inv -> inv.getArgument(0));
         when(members.save(any(FamilyMember.class))).thenAnswer(inv -> inv.getArgument(0));
         when(users.findById(ana.getId())).thenReturn(Optional.of(ana));
         when(users.findById(ben.getId())).thenReturn(Optional.of(ben));
         service = new FamilyService(families, members, users, new FamilyAccessService(members), codes,
-                locations, events);
+                locations, events, presence);
     }
 
     @Test
@@ -197,6 +200,7 @@ class FamilyServiceTest {
         verify(events).publishEvent(event.capture());
         assertThat(event.getValue().familyId()).isEqualTo(family.getId());
         assertThat(event.getValue().member()).isEqualTo(res);
+        verify(presence).deleteForUserInFamily(ben.getId(), family.getId()); // no "left Home" after resuming
     }
 
     @Test
